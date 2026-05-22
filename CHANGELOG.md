@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `privacy_tags` column + `include_privacy[]` recall filter
+
+External operator PR (Brad Heath, R730 / Nacho Money LLC, 2026-05-22 — DRAFT, awaiting Josh review): category-tag system for marking sensitive memory items so `memory_recall` can default-exclude them from work/coding sessions and surface them only on explicit opt-in. Required by Brad's new `pkachu` (Personal Knowledge Archive) project — kicked off 2026-05-18, mirrors ~20yr personal corpus into `memory_items` with `project='pkachu'`, needs to mark sensitive content (finance/health/legal/family/work-confidential) so default `memory_recall` queries from coding sessions don't surface it as noise. F3 design lock from the kickoff brief: **context-filter, not firewall** — no multi-user concern, no external-access risk (Mnestra anon REVOKED).
+
+What this adds:
+- **`memory_items.privacy_tags text[]` column** (default `ARRAY[]::text[]`) via migration `023_privacy_tags_column.sql`. Open-ended category tags; initial recognized values `finance / health / legal / family / work-confidential`. Default for existing rows is empty array — fully backward-compatible.
+- **GIN index `idx_memory_items_privacy_tags`** on `(privacy_tags) WHERE is_active = true AND archived = false` — free insurance for a future server-side variant of `memory_hybrid_search`.
+- **`include_privacy?: string[]` parameter** on `RecallInput` (`src/types.ts`) and the `memory_recall` MCP tool (`mcp-server/index.ts`). Default behavior (omitted / empty) excludes any item with non-empty `privacy_tags`. Explicit opt-in surfaces them: `include_privacy=['finance']` returns finance-tagged items.
+- **Filter implemented at `src/recall.ts` post-fetch layer** (mirroring the Sprint 50 `source_agent` pattern) to keep `memory_hybrid_search`'s 8-arg canonical signature stable — direct lesson from Rumen Sprint 54→56 signature-drift cost. The new `idx_memory_items_privacy_tags` GIN index is ready when/if a future RPC variant adopts the filter server-side.
+- **Orthogonal to existing `src/privacy.ts <private>...</private>` redaction.** That existing concept strips secret-block TEXT at write time; this PR adds whole-item categorical tags filtered at query time. Both coexist on the same row without interaction; documented in `023_privacy_tags_column.sql` header.
+
+Four open questions for Josh in the PR description (extend `memory_hybrid_search` RETURNS TABLE additively? open-ended vs CHECK-constrained tag values? `include_privacy=['*']` sentinel? `mcp-server/index.ts` validation pattern?). PR is DRAFT pending Josh review of these.
+
 ### Planned
 - Web viewer UI for browsing memories (port 37777), matching the shape `claude-mem` ships.
 - Claude Code lifecycle-hooks capture path — auto-ingest tool usage without a client call.

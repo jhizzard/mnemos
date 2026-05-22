@@ -253,7 +253,7 @@ server.registerTool(
   {
     title: 'Recall',
     description:
-      'Smart retrieval of relevant memories. Returns concise, deduplicated results within a token budget. Prioritizes decisions and bug fixes over raw document chunks. Always returns at least min_results hits when available. Omit project to search across ALL projects. Optionally filter by source_agents to recall only rows produced by specific LLMs (claude/codex/gemini/grok/orchestrator); set include_null_source=true to also include historical rows whose authoring agent is unknown.',
+      'Smart retrieval of relevant memories. Returns concise, deduplicated results within a token budget. Prioritizes decisions and bug fixes over raw document chunks. Always returns at least min_results hits when available. Omit project to search across ALL projects. Optionally filter by source_agents to recall only rows produced by specific LLMs (claude/codex/gemini/grok/orchestrator); set include_null_source=true to also include historical rows whose authoring agent is unknown. Optionally pass include_privacy=[\'finance\',...] to surface memories tagged with sensitive privacy categories; by default, any row with non-empty privacy_tags is excluded (F3 context-filter design from external Brad project pkachu).',
     inputSchema: {
       query: z.string().describe('What to search for in memory'),
       project: z
@@ -282,9 +282,15 @@ server.registerTool(
         .describe(
           'When true, NULL-source-agent rows pass the source_agents filter alongside agent-matched rows. Default false preserves the Sprint 50 silent-drop semantics. No effect when source_agents is omitted.'
         ),
+      include_privacy: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Filter results by privacy_tags. Omit (or pass empty array) for default behavior — items with any privacy_tags are EXCLUDED. When set to a non-empty array, items whose privacy_tags overlap the requested set are INCLUDED (and items with no tags remain included as before). Recognized values: finance, health, legal, family, work-confidential (open-ended). Added migration 023 — F3 context-filter, not firewall.'
+        ),
     },
   },
-  async ({ query, project, token_budget, min_results, source_agents, include_null_source }) => {
+  async ({ query, project, token_budget, min_results, source_agents, include_null_source, include_privacy }) => {
     try {
       const out = await memoryRecall({
         query,
@@ -293,6 +299,7 @@ server.registerTool(
         min_results: min_results || 5,
         source_agents: source_agents ?? null,
         include_null_source: include_null_source === true,
+        include_privacy: include_privacy ?? [],
       });
       return { content: [{ type: 'text' as const, text: out.text }] };
     } catch (err) {

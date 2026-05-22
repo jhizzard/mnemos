@@ -109,6 +109,16 @@ export async function memoryRecall(
       ? input.source_agents
       : null;
   const includeNullSource = input.include_null_source === true;
+  // 2026-05-22 (migration 023) — privacy_tags filter. Default-exclude rows
+  // with any privacy_tags unless the caller's include_privacy intersects.
+  // F3 lock from external Brad project `pkachu`: context-filter, not
+  // firewall. See src/types.ts RecallInput.include_privacy for full
+  // contract. Filter applied via a follow-up SELECT below (preserves the
+  // 8-arg memory_hybrid_search canonical signature; future RPC variant
+  // can return privacy_tags as an additive column).
+  const includePrivacy = Array.isArray(input.include_privacy)
+    ? input.include_privacy
+    : [];
 
   // Over-fetch so dedup + rank have material to work with.
   const fetchCount = Math.min(Math.max(Math.floor(budget / 50), 10), 40);
@@ -170,6 +180,42 @@ export async function memoryRecall(
       // deliberately left NULL.
       if (!agent) return includeNullSource;
       return sourceAgents.includes(agent);
+    });
+    if (rows.length === 0) {
+      return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
+    }
+  }
+
+  // 2026-05-22 (migration 023) — privacy_tags filter. Always-on:
+  // default-excludes rows with any privacy_tags unless the caller's
+  // include_privacy intersects. Empty/null privacy_tags rows always pass.
+  // Same RPC-signature-stability rationale as the source_agent block above;
+  // separate follow-up SELECT keeps the code parallel + readable. Could be
+  // merged with the source_agent select for perf if Josh prefers.
+  {
+    const ids = rows.map((r) => r.id);
+    const { data: tagRows, error: tagErr } = await supabase
+      .from('memory_items')
+      .select('id, privacy_tags')
+      .in('id', ids);
+    if (tagErr) {
+      console.error(
+        '[mnestra-search] privacy_tags lookup failed:',
+        tagErr.message
+      );
+      return { hits: [], tokens_used: 0, text: `Search error: ${tagErr.message}` };
+    }
+    const tagMap = new Map<string, string[]>(
+      ((tagRows ?? []) as { id: string; privacy_tags: string[] | null }[]).map(
+        (r) => [r.id, r.privacy_tags ?? []]
+      )
+    );
+    const includeSet = new Set(includePrivacy);
+    rows = rows.filter((r) => {
+      const tags = tagMap.get(r.id) ?? [];
+      if (tags.length === 0) return true; // untagged: always include
+      if (includeSet.size === 0) return false; // tagged + caller wants none
+      return tags.some((t) => includeSet.has(t)); // tagged + overlap
     });
     if (rows.length === 0) {
       return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };

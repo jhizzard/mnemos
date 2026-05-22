@@ -123,6 +123,25 @@ export interface RecallInput {
    * pass an unfiltered query).
    */
   include_null_source?: boolean;
+  /**
+   * Filter results by privacy_tags. Omit (or pass an empty array) for
+   * default behavior — items with any privacy_tags are EXCLUDED from
+   * results. When set to a non-empty array, items whose privacy_tags
+   * overlap the requested set are INCLUDED (and items with no tags
+   * remain included as before). Recognized values: 'finance', 'health',
+   * 'legal', 'family', 'work-confidential' — open-ended.
+   *
+   * Examples:
+   *   include_privacy: undefined / []  → no tagged items returned (default)
+   *   include_privacy: ['finance']      → finance-tagged items appear; other tagged items don't
+   *   include_privacy: ['finance','health'] → both finance AND health-tagged items appear
+   *
+   * Added 2026-05-22 — required by external Brad project `pkachu`
+   * (Personal Knowledge Archive) which mirrors sensitive personal
+   * corpus rows into memory_items. F3 lock: context-filter, not firewall.
+   * See migrations/023_privacy_tags_column.sql.
+   */
+  include_privacy?: string[];
 }
 
 export interface RecallHit {
