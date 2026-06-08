@@ -123,6 +123,17 @@ export interface RecallInput {
    * pass an unfiltered query).
    */
   include_null_source?: boolean;
+  /**
+   * Privacy-tags PR (Deck B): opt-in list of privacy-category tags to
+   * surface. Default behavior — omitted or an empty array — EXCLUDES every
+   * row carrying any privacy tag, keeping tagged-sensitive items out of
+   * ordinary recalls (the one intentional, non-breaking behavior change Brad
+   * specified). An explicit include_privacy: ['secret', …] surfaces rows that
+   * share at least one tag with the list (any-overlap); untagged rows always
+   * pass regardless. Filtered at the recall.ts layer — never added to the
+   * memory_hybrid_search RPC arg list — to keep its 8-arg signature stable.
+   */
+  include_privacy?: string[];
 }
 
 export interface RecallHit {
@@ -134,6 +145,14 @@ export interface RecallHit {
   score: number;
   metadata: Record<string, unknown>;
   created_at: string;
+  /**
+   * Privacy-tags PR (Deck B): categorical sensitivity tags on the row,
+   * surfaced by memory_hybrid_search's extended RETURNS TABLE (migration
+   * 023). Absent/NULL on pre-migration rows and on RPC results that predate
+   * the column; recall.ts reads it as (privacy_tags ?? []) so a missing value
+   * degrades to "untagged" rather than throwing.
+   */
+  privacy_tags?: string[] | null;
 }
 
 export interface SearchInput {

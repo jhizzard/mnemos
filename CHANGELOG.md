@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `privacy_tags` column + `include_privacy[]` recall filter (Brad's pka prerequisite)
+
+External request (Brad Heath, 2026-05-18): a non-breaking Mnestra schema change for the pka
+(Personal Knowledge Archive) project's F3 decision — exclude tagged-sensitive items from default
+recall, surface them only on explicit opt-in.
+
+- **Migration `023_privacy_tags_column.sql`** — adds `public.memory_items.privacy_tags text[] not
+  null default array[]::text[]` (open-ended categorical tags for sensitive content) + a GIN index on
+  the column. Re-creates `memory_hybrid_search` with `privacy_tags` appended to its RETURNS TABLE so
+  the recall layer can filter without a follow-up SELECT. The 8-input-arg RPC signature is unchanged;
+  the function is re-created via DROP+CREATE (Postgres forbids changing a return type via REPLACE),
+  preserving `SECURITY INVOKER`, `set search_path = public, extensions, pg_catalog`, and the
+  `REVOKE EXECUTE … FROM public, anon, authenticated` + targeted service-role `GRANT` hygiene from migration 019.
+- **`include_privacy?: string[]` recall filter** (`src/recall.ts`, `RecallInput`, `RecallHit`,
+  `memory_recall` MCP tool) — rows carrying any `privacy_tags` are excluded from recall by default;
+  an explicit `include_privacy: ['<tag>', …]` opts matching rows back in (any-overlap). Untagged rows
+  (the default empty array) are unaffected. Mirrors the Sprint 50 `source_agents` JS-layer filter,
+  reading `privacy_tags` directly off each RPC row (no follow-up SELECT / N+1).
+
+Non-breaking: every pre-existing row carries the empty-array default, so recall output is identical
+immediately post-migration. The exclude-by-default behavior is prospective — it applies only once a
+writer sets tags on a row.
+
 ### Planned
 - Web viewer UI for browsing memories (port 37777), matching the shape `claude-mem` ships.
 - Claude Code lifecycle-hooks capture path — auto-ingest tool usage without a client call.
