@@ -3,13 +3,23 @@
 /**
  * Mnestra CLI entry point
  *
- * Default (no args): starts the stdio MCP server with six tools:
- *   memory_remember, memory_recall, memory_search, memory_forget,
- *   memory_status, memory_summarize_session.
+ * Default (no args): starts the stdio MCP server with thirteen tools:
+ *   memory_remember, memory_recall, memory_recall_graph, memory_search,
+ *   memory_forget, memory_status, memory_summarize_session, memory_index,
+ *   memory_timeline, memory_get, memory_link, memory_unlink,
+ *   memory_related.
  *
  * `mnestra serve`: starts the HTTP webhook server (src/webhook-server.ts)
  * instead of the MCP stdio server. The two are additive — existing MCP
  * clients are unaffected.
+ *
+ * Sprint 76 T1 — DELIBERATE NON-CHANGE: this stdio server registers NO
+ * memory_propose tool. Local MCP callers are CLI trust domain and write
+ * canonical via memory_remember; the quarantined proposal channel exists
+ * only as the webhook `propose` op, consumed by the MCP bridge's
+ * web-connector surface ("CLIs write canonical; web chats write
+ * proposals"). Do not add a propose tool here without revisiting the
+ * Sprint 76 trust-boundary design.
  */
 
 import { existsSync, readFileSync } from 'node:fs';

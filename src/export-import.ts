@@ -11,6 +11,7 @@
 
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
@@ -24,6 +25,8 @@ export interface ExportOptions {
   project?: string;
   since?: string;
   out: Writable;
+  /** Override the Supabase client (tests inject a fake). */
+  client?: SupabaseClient;
 }
 
 export interface ExportReport {
@@ -31,7 +34,7 @@ export interface ExportReport {
 }
 
 export async function exportMemories(opts: ExportOptions): Promise<ExportReport> {
-  const supabase = getSupabase();
+  const supabase = opts.client ?? getSupabase();
   let offset = 0;
   let total = 0;
 

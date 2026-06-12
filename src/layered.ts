@@ -14,6 +14,7 @@
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import type { RecallDeps } from './recall.js';
 import type { MemoryItem, RecallHit, SourceType } from './types.js';
 
 const SNIPPET_MAX = 120;
@@ -80,13 +81,17 @@ function toIndexHit(row: {
 }
 
 /** memory_index — compact projection of the hybrid search results. */
-export async function memoryIndex(input: IndexInput): Promise<IndexHit[]> {
+export async function memoryIndex(
+  input: IndexInput,
+  deps: RecallDeps = {}
+): Promise<IndexHit[]> {
   const query = input.query.trim();
   if (!query) return [];
 
   const limit = input.limit ?? INDEX_DEFAULT_LIMIT;
-  const supabase = getSupabase();
-  const embedding = await generateEmbedding(query);
+  const supabase = deps.client ?? getSupabase();
+  const embed = deps.generateEmbedding ?? generateEmbedding;
+  const embedding = await embed(query);
 
   const { data, error } = await supabase.rpc('memory_hybrid_search', {
     query_text: query,
@@ -111,12 +116,15 @@ export async function memoryIndex(input: IndexInput): Promise<IndexHit[]> {
  * memory_timeline — memories from the same project chronologically surrounding
  * either a query's top hit or a specific observation ID.
  */
-export async function memoryTimeline(input: TimelineInput): Promise<IndexHit[]> {
+export async function memoryTimeline(
+  input: TimelineInput,
+  deps: RecallDeps = {}
+): Promise<IndexHit[]> {
   const win = WINDOW_SECONDS[input.window];
   if (!win) throw new Error(`invalid window: ${input.window}`);
   const radius = input.radius ?? TIMELINE_DEFAULT_RADIUS;
 
-  const supabase = getSupabase();
+  const supabase = deps.client ?? getSupabase();
 
   let anchorProject: string | null = null;
   let anchorCreatedAt: string | null = null;
@@ -139,7 +147,7 @@ export async function memoryTimeline(input: TimelineInput): Promise<IndexHit[]> 
     anchorProject = (data as { project: string }).project;
     anchorCreatedAt = (data as { created_at: string }).created_at;
   } else if (input.query) {
-    const hits = await memoryIndex({ query: input.query, limit: 1 });
+    const hits = await memoryIndex({ query: input.query, limit: 1 }, deps);
     if (hits.length === 0) return [];
     const top = hits[0]!;
     anchorProject = top.project;
@@ -178,7 +186,10 @@ export async function memoryTimeline(input: TimelineInput): Promise<IndexHit[]> 
 }
 
 /** memory_get — batch fetch full rows by UUID. Batch-only to discourage N+1. */
-export async function memoryGet(input: GetInput): Promise<MemoryItem[]> {
+export async function memoryGet(
+  input: GetInput,
+  deps: RecallDeps = {}
+): Promise<MemoryItem[]> {
   const ids = input.ids ?? [];
   if (!Array.isArray(ids) || ids.length === 0) {
     throw new Error('memory_get requires a non-empty ids array');
@@ -195,7 +206,7 @@ export async function memoryGet(input: GetInput): Promise<MemoryItem[]> {
   // Explicit column list (no `embedding`) so the shape matches the HTTP
   // citation endpoint `GET /observation/:id` exactly. The embedding
   // vector is useless for citations and bloats responses ~6 KB each.
-  const supabase = getSupabase();
+  const supabase = deps.client ?? getSupabase();
   const { data, error } = await supabase
     .from('memory_items')
     .select(
