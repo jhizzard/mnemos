@@ -79,6 +79,18 @@ export interface RememberInput {
   source_type?: SourceType;
   category?: Category | null;
   metadata?: Record<string, unknown>;
+  /**
+   * Sprint 74 T1: provenance of the writer, stored on
+   * `memory_items.source_agent`. Loose `string` (not `SourceAgent`) on
+   * purpose — same loose-at-core / strict-at-MCP-boundary pattern as
+   * `RecallInput.source_agents`. remember.ts normalizes the value
+   * (trim/lowercase/shape-check); well-formed values outside the known
+   * taxonomy are stored as-is so a future agent's rows become
+   * retro-filterable the day SOURCE_AGENTS adds the value — no
+   * migration-022-style backfill archaeology. Omit/null = NULL column
+   * (unknown provenance), the pre-Sprint-74 behavior.
+   */
+  source_agent?: string | null;
 }
 
 export type RememberResult = 'inserted' | 'updated' | 'skipped';
@@ -89,8 +101,27 @@ export type RememberResult = 'inserted' | 'updated' | 'skipped';
  * (Claude direct, plus TermDeck's per-adapter panel-close trigger from
  * Sprint 50 T1). NULL for historical rows that pre-date the column —
  * see migrations/015_source_agent.sql for the backfill rule.
+ *
+ * Sprint 74 T1: web-surface agents (`*-web`) identify browser-chat panels
+ * as distinct trust domains from their CLI counterparts — a filter for
+ * `grok` deliberately does NOT match `grok-web` (exact-match semantics).
+ * Only grok-web has a live producer today (TermDeck's web-chat-grok
+ * panel); claude-web / chatgpt-web / gemini-web are forward declarations
+ * for the queued memory-inbox sprint. The DB column stays plain nullable
+ * text with NO CHECK constraint, so adding a value here (plus migration
+ * 025's COMMENT refresh) is the entire schema story — fail-soft writers
+ * can never lose capture to a constraint violation on taxonomy skew.
  */
-export type SourceAgent = 'claude' | 'codex' | 'gemini' | 'grok' | 'orchestrator';
+export type SourceAgent =
+  | 'claude'
+  | 'codex'
+  | 'gemini'
+  | 'grok'
+  | 'orchestrator'
+  | 'claude-web'
+  | 'chatgpt-web'
+  | 'grok-web'
+  | 'gemini-web';
 
 export const SOURCE_AGENTS: SourceAgent[] = [
   'claude',
@@ -98,6 +129,10 @@ export const SOURCE_AGENTS: SourceAgent[] = [
   'gemini',
   'grok',
   'orchestrator',
+  'claude-web',
+  'chatgpt-web',
+  'grok-web',
+  'gemini-web',
 ];
 
 export interface RecallInput {

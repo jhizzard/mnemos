@@ -35,10 +35,13 @@ import {
   memoryLink,
   memoryUnlink,
   memoryRelated,
+  SOURCE_AGENTS,
+  type SourceAgent,
 } from '../src/index.js';
 import { startWebhookServer } from '../src/webhook-server.js';
 import { exportMemories, importMemories } from '../src/export-import.js';
 import { runDoctor, formatDoctor } from '../src/doctor.js';
+import { resolveDatabaseUrl } from '../src/db-endpoint.js';
 import { createSupabaseDoctorDataSource } from '../src/doctor-data-source.js';
 import { getSupabase } from '../src/db.js';
 
@@ -109,7 +112,8 @@ const HELP_TEXT = `mnestra — persistent developer memory (MCP + HTTP)
 Usage:
   mnestra                    Start the stdio MCP server (default; backwards compatible)
   mnestra serve              Start the HTTP webhook server on $MNESTRA_WEBHOOK_PORT (default 37778)
-  mnestra doctor             Health-probe the install (cron all-zeros, latency, schema drift, MCP path parity)
+  mnestra doctor             Health-probe the install (cron all-zeros, latency, schema drift, MCP path parity,
+                              DATABASE_URL endpoint shape)
                               Exit 0 = all green, 1 = at least one red, 2 = at least one yellow.
                               --json                emit structured DoctorReport instead of text
   mnestra export [opts]      Stream memory rows as JSONL to stdout
@@ -123,6 +127,10 @@ Environment:
   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY   required for all operations
   OPENAI_API_KEY                             required for embeddings (remember/recall/index/search)
   MNESTRA_WEBHOOK_PORT                        HTTP port for \`mnestra serve\` (default 37778)
+  DATABASE_URL                                optional; only inspected by \`mnestra doctor\` to flag
+                                              IPv6-only endpoints (db.<project-ref>.supabase.co) that
+                                              hang on IPv4-only hosts — mnestra itself connects via
+                                              SUPABASE_URL over HTTPS
 
 Docs: https://github.com/jhizzard/mnestra
 `;
@@ -152,7 +160,10 @@ if (subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
   loadTermdeckSecretsFallback();
   const supabase = getSupabase();
   const data = createSupabaseDoctorDataSource(supabase);
-  const report = await runDoctor({ data });
+  // Sprint 74 T2: hand the ambient DATABASE_URL (env → ~/.termdeck/
+  // secrets.env) to the endpoint-shape probe here at the CLI boundary —
+  // runDoctor itself stays environment-free.
+  const report = await runDoctor({ data, databaseUrl: resolveDatabaseUrl() });
   // Sprint 53 T3: --json emits the structured report (Brad-equivalent
   // diagnosis without a psql round-trip). Default text path unchanged.
   const wantsJson = process.argv.slice(3).some((a) => a === '--json');
@@ -253,7 +264,7 @@ server.registerTool(
   {
     title: 'Recall',
     description:
-      'Smart retrieval of relevant memories. Returns concise, deduplicated results within a token budget. Prioritizes decisions and bug fixes over raw document chunks. Always returns at least min_results hits when available. Omit project to search across ALL projects. Optionally filter by source_agents to recall only rows produced by specific LLMs (claude/codex/gemini/grok/orchestrator); set include_null_source=true to also include historical rows whose authoring agent is unknown. By default rows carrying any privacy tag are excluded; pass include_privacy with category tags to surface them.',
+      'Smart retrieval of relevant memories. Returns concise, deduplicated results within a token budget. Prioritizes decisions and bug fixes over raw document chunks. Always returns at least min_results hits when available. Omit project to search across ALL projects. Optionally filter by source_agents to recall only rows produced by specific agents (CLI: claude/codex/gemini/grok/orchestrator; web surfaces: claude-web/chatgpt-web/grok-web/gemini-web — base and -web values are distinct, e.g. "grok" never matches "grok-web"); set include_null_source=true to also include historical rows whose authoring agent is unknown. By default rows carrying any privacy tag are excluded; pass include_privacy with category tags to surface them.',
     inputSchema: {
       query: z.string().describe('What to search for in memory'),
       project: z
@@ -271,10 +282,13 @@ server.registerTool(
           'Minimum number of hits to return if that many exist, regardless of score threshold.'
         ),
       source_agents: z
-        .array(z.enum(['claude', 'codex', 'gemini', 'grok', 'orchestrator']))
+        // Derived from SOURCE_AGENTS (src/types.ts) so the MCP gate and the
+        // TS taxonomy cannot drift — extending the constant extends this
+        // enum and the serialized tool schema in the same change.
+        .array(z.enum(SOURCE_AGENTS as [SourceAgent, ...SourceAgent[]]))
         .optional()
         .describe(
-          'Filter to memories produced by specific source agents. Omit (or empty array) for all agents. NULL-source-agent rows (historical, pre-Sprint-50, plus the residual slice migration 022 deliberately left NULL) are excluded by default when this filter is set; pass include_null_source=true to include them.'
+          'Filter to memories produced by specific source agents. CLI agents (claude/codex/gemini/grok/orchestrator) and web-surface agents (claude-web/chatgpt-web/grok-web/gemini-web) are distinct values — "grok" never matches "grok-web". Omit (or empty array) for all agents. NULL-source-agent rows (historical, pre-Sprint-50, plus the residual slice migration 022 deliberately left NULL) are excluded by default when this filter is set; pass include_null_source=true to include them.'
         ),
       include_null_source: z
         .boolean()

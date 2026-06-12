@@ -1,3 +1,16 @@
+## [0.5.0] - 2026-06-11
+
+### Added
+- Four web-surface `source_agents` values — `claude-web`, `chatgpt-web`, `grok-web`, `gemini-web` — across the full enforcement inventory (TS type + const, MCP Zod enum, recall filter, fixtures); migration `025_source_agent_web_surfaces.sql` (comment + verify; deliberately no CHECK constraint — column stays advisory text per the established taxonomy pattern). Only `grok-web` has a live producer today; the other three are forward declarations for the web-chat memory-inbox work.
+- Webhook write path now accepts and threads `source_agent` (`RememberInput` → dispatch → insert) — hook-written rows no longer land NULL.
+- `src/db-endpoint.ts` — DATABASE_URL endpoint classifier (direct IPv6-only `db.<ref>` vs IPv4 pooler shapes) + validate-and-warn at ingress + doctor probe 5; 29 URL-shape tests.
+- `src/reembed-hook-rows.ts` — batched, idempotent, resumable re-embed backfill for 3-small-embedded hook rows (marker: `metadata.embedding_model`), with runbook under `docs/runbooks/`. Live dry-run counted 545 pending rows.
+
+### Notes
+- Sprint 74 verdict (Grok auditor, FINAL-VERDICT GREEN): no read-after-write staleness anywhere — all auto-capture writers are synchronous embed→insert→commit and the bridge read path is cache-free; the only systemic lag is Rumen's by-design 15-min insight cycle. Clears the field-deployment cutover gate.
+- Run the re-embed backfill only AFTER the companion termdeck v1.9.0 hooks (session-end v5 / pre-compact v2, embed `text-embedding-3-large@1536`) are installed, or new mismatched rows keep arriving behind it.
+- Suite 128/128 over the merged sprint tree.
+
 # Changelog
 
 All notable changes to Mnestra will be documented in this file.

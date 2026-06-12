@@ -38,6 +38,15 @@ You will also need:
 
 The `migrations/` directory contains six SQL files. Apply them in order against your database:
 
+> **Which connection string goes in `DATABASE_URL`? — IPv4-only hosts, read this first.**
+> In the Supabase dashboard open **Connect** (the green button) → **Transaction pooler** → toggle ON **"Use IPv4 connection (Shared Pooler)"**, then copy the URL:
+>
+> `postgres://postgres.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:6543/postgres`
+>
+> With the toggle OFF (the default) the modal shows the Dedicated Pooler, and the "Direct connection" tab shows `db.<project-ref>.supabase.co` — **both hostnames resolve to IPv6 only** (AAAA record, no A record). On a machine without IPv6 — many CI runners, VPSes, and datacenter hosts — `psql` and `pg`-based clients don't fail fast; they hang until a connect/pool timeout. The Shared Pooler URL works from both IPv4-only and IPv6 hosts. Note its username is `postgres.<project-ref>`, not plain `postgres` — a plain `postgres` username on the pooler host fails with `Tenant or user not found`.
+>
+> `mnestra doctor` checks the shape of any `DATABASE_URL` it can see and flags an IPv6-only endpoint before it bites.
+
 ```bash
 psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/001_mnestra_tables.sql
 psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/002_mnestra_search_function.sql
