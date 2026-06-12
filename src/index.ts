@@ -7,7 +7,17 @@
  */
 
 export { memoryRemember } from './remember.js';
-export { memoryRecall, type RecallOutput } from './recall.js';
+export { memoryRecall, type RecallOutput, type RecallDeps } from './recall.js';
+export {
+  memoryPropose,
+  isProposeRejected,
+  ProposeRejectedError,
+  PROPOSE_REJECTED_PREFIX,
+  PROPOSE_TEXT_MAX_CHARS,
+  PROPOSE_PROJECT_HINT_MAX_CHARS,
+  PROPOSE_METADATA_MAX_BYTES,
+  type ProposeDeps,
+} from './propose.js';
 export {
   memoryRecallGraph,
   type GraphRecallInput,

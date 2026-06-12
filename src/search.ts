@@ -8,15 +8,20 @@
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import type { RecallDeps } from './recall.js';
 import type { RecallHit, SearchInput } from './types.js';
 
-export async function memorySearch(input: SearchInput): Promise<RecallHit[]> {
+export async function memorySearch(
+  input: SearchInput,
+  deps: RecallDeps = {}
+): Promise<RecallHit[]> {
   const query = input.query.trim();
   if (!query) return [];
 
   const limit = input.limit ?? 20;
-  const supabase = getSupabase();
-  const embedding = await generateEmbedding(query);
+  const supabase = deps.client ?? getSupabase();
+  const embed = deps.generateEmbedding ?? generateEmbedding;
+  const embedding = await embed(query);
 
   const { data, error } = await supabase.rpc('memory_hybrid_search', {
     query_text: query,

@@ -1,3 +1,12 @@
+## [0.6.0] - 2026-06-12
+
+### Added
+- Migration `026_memory_inbox.sql` — quarantined web-chat proposal table + SECURITY DEFINER `memory_propose` RPC. All five RLS hygiene gates with a hard-failing apply-time receipt; status/consistency CHECKs; FK to memory_items; partial pending index. Pending rows are unreachable from every recall surface (16 TS surfaces + 8 SQL functions inventoried; falsified end-to-end with sentinel rows — zero leakage).
+- Webhook `propose` op + types threading source_agent (web-surface values only).
+
+### Notes
+- Sprint 76, FINAL-VERDICT GREEN (Grok auditor). Suite 167/167. Migration 026 is apply-ready but NOT applied to any production DB at release — application + propose activation are operator decisions. Companion: @jhizzard/termdeck@1.10.0 (bridge memory_propose tool, dark-gated), @jhizzard/rumen (promotion pass).
+
 ## [0.5.0] - 2026-06-11
 
 ### Added

@@ -17,6 +17,7 @@
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import type { RecallDeps } from './recall.js';
 
 const DEFAULT_DEPTH = 2;
 const DEFAULT_K = 10;
@@ -53,7 +54,8 @@ function truncate(content: string, maxLen: number): string {
 }
 
 export async function memoryRecallGraph(
-  input: GraphRecallInput
+  input: GraphRecallInput,
+  deps: RecallDeps = {}
 ): Promise<GraphRecallOutput> {
   const query = input.query.trim();
   if (!query) {
@@ -68,8 +70,9 @@ export async function memoryRecallGraph(
   const k = input.k ?? DEFAULT_K;
   const project = input.project ?? null;
 
-  const supabase = getSupabase();
-  const embedding = await generateEmbedding(query);
+  const supabase = deps.client ?? getSupabase();
+  const embed = deps.generateEmbedding ?? generateEmbedding;
+  const embedding = await embed(query);
 
   const { data, error } = await supabase.rpc('memory_recall_graph', {
     query_embedding: formatEmbedding(embedding),

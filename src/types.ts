@@ -135,6 +135,71 @@ export const SOURCE_AGENTS: SourceAgent[] = [
   'gemini-web',
 ];
 
+/**
+ * Sprint 76 T1: the web-surface subset of SOURCE_AGENTS — the ONLY values
+ * memory_propose() accepts ("CLIs write canonical; web chats write
+ * proposals"). DERIVED from SOURCE_AGENTS by suffix filter rather than
+ * declared as a second literal list, so the two cannot drift: adding a
+ * fifth *-web value to SOURCE_AGENTS extends this const, the TS
+ * mirror-validation in src/propose.ts, and the serialized whitelist in the
+ * same change — the same single-source-of-truth pattern as the zod enum
+ * the MCP recall gate derives from SOURCE_AGENTS (Sprint 74).
+ *
+ * NOTE: the authoritative SQL whitelist inside
+ * migrations/026_memory_inbox.sql is necessarily a literal four-value list
+ * (SQL cannot import this module); tests/migration-026-hygiene.test.ts
+ * pins the two lists in lockstep.
+ */
+export type WebSourceAgent = Extract<SourceAgent, `${string}-web`>;
+
+export const WEB_SOURCE_AGENTS: WebSourceAgent[] = SOURCE_AGENTS.filter(
+  (a): a is WebSourceAgent => a.endsWith('-web')
+);
+
+/** Sprint 76 T1: lifecycle of a public.memory_inbox proposal row. */
+export type MemoryInboxStatus = 'pending' | 'promoted' | 'rejected';
+
+/**
+ * Sprint 76 T1: a public.memory_inbox row (migration 026) — a quarantined
+ * web-chat proposal. A row here is NOT a memory: no recall path reads the
+ * inbox (pinned by tests/quarantine-proof.test.ts). The Rumen promotion
+ * pass is the only consumer, stamping status='promoted' (+
+ * promoted_memory_id) or status='rejected' (+ rejection_reason).
+ */
+export interface MemoryInboxRow {
+  id: string;
+  created_at: string;
+  /** One of WEB_SOURCE_AGENTS — enforced by the RPC whitelist, not a CHECK. */
+  source_agent: string;
+  /** Proposer's claimed project; advisory only — Rumen may re-map. */
+  project_hint: string | null;
+  /** The proposal body (trimmed; <= 4000 chars). */
+  text: string;
+  status: MemoryInboxStatus;
+  promoted_memory_id: string | null;
+  rejection_reason: string | null;
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Sprint 76 T1: input to memoryPropose / the webhook `propose` op. Loose
+ * `string` for source_agent at the core (strict at the boundary) — the
+ * same loose-at-core pattern as RememberInput.source_agent, except here a
+ * non-whitelisted value is REJECTED rather than stored: proposals are a
+ * trust boundary, not fail-soft capture.
+ */
+export interface ProposeInput {
+  source_agent: string;
+  text: string;
+  project_hint?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+/** Sprint 76 T1: result of a successful proposal — the new inbox row id. */
+export interface ProposeResult {
+  id: string;
+}
+
 export interface RecallInput {
   query: string;
   project?: string | null;

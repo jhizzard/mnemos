@@ -30,6 +30,7 @@ function mockDeps(overrides: Partial<OpDeps> = {}): OpDeps {
     index: async () => [],
     timeline: async () => [],
     get: async () => [],
+    propose: async () => ({ id: '00000000-0000-0000-0000-000000000099' }),
     ...overrides,
   };
 }

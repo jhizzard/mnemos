@@ -5,17 +5,27 @@
  * tiny HTTP surface. TermDeck and other clients POST terminal events
  * here instead of spawning an MCP child process per ingest.
  *
- *   POST /mnestra           { op: 'remember'|'recall'|'search'|'status', ...args }
+ *   POST /mnestra           { op: 'remember'|'recall'|'search'|'status'
+ *                                 |'index'|'timeline'|'get'|'propose', ...args }
  *   GET  /healthz          liveness + store stats
  *   GET  /observation/:id  single memory by UUID (citation endpoint)
  *
  * Port: MNESTRA_WEBHOOK_PORT, default 37778.
+ *
+ * Sprint 76 T1 — the `propose` op is the web-surface quarantine channel
+ * ("CLIs write canonical; web chats write proposals"): it inserts into
+ * public.memory_inbox via the validating memory_propose RPC and NEVER
+ * touches memory_items. It exists for the MCP bridge (Sprint 76 T2) only;
+ * the stdio MCP server deliberately registers no memory_propose tool
+ * (local MCP callers are CLI trust domain and use memory_remember).
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { memoryRecall, type RecallOutput } from './recall.js';
 import { memoryRemember } from './remember.js';
+import { memoryPropose, isProposeRejected } from './propose.js';
 import { memorySearch } from './search.js';
 import { memoryStatus } from './status.js';
 import {
@@ -31,6 +41,8 @@ import {
 import { getSupabase } from './db.js';
 import type {
   MemoryItem,
+  ProposeInput,
+  ProposeResult,
   RecallHit,
   RecallInput,
   RememberInput,
@@ -50,6 +62,8 @@ export interface OpDeps {
   index: (input: IndexInput) => Promise<IndexHit[]>;
   timeline: (input: TimelineInput) => Promise<IndexHit[]>;
   get: (input: GetInput) => Promise<MemoryItem[]>;
+  /** Sprint 76 T1: quarantined web-proposal channel (memory_inbox only). */
+  propose: (input: ProposeInput) => Promise<ProposeResult>;
 }
 
 export const defaultDeps: OpDeps = {
@@ -60,6 +74,7 @@ export const defaultDeps: OpDeps = {
   index: memoryIndex,
   timeline: memoryTimeline,
   get: memoryGet,
+  propose: memoryPropose,
 };
 
 export interface DispatchResult {
@@ -168,6 +183,36 @@ export async function dispatchOp(
         const rows = await deps.get({ ids });
         return { status: 200, body: { ok: true, rows } };
       }
+      case 'propose': {
+        // Sprint 76 T1 — bridge-only quarantine channel. Strict field names
+        // (no content/text aliasing like `remember`): the T2 bridge is the
+        // sole caller and builds to this contract. Validation rejections
+        // (TS mirror or the SQL RPC, both prefixed MEMORY_PROPOSE_REJECTED)
+        // are client errors → 400 with the reason for the bridge to surface
+        // to the connector; anything else stays a 500 via the outer catch.
+        const sourceAgent = args.source_agent as string | undefined;
+        if (!sourceAgent) {
+          return { status: 400, body: { ok: false, error: 'propose requires source_agent' } };
+        }
+        const text = args.text as string | undefined;
+        if (!text) {
+          return { status: 400, body: { ok: false, error: 'propose requires text' } };
+        }
+        try {
+          const result = await deps.propose({
+            source_agent: sourceAgent,
+            text,
+            project_hint: (args.project_hint ?? null) as string | null,
+            metadata: args.metadata as Record<string, unknown> | undefined,
+          });
+          return { status: 200, body: { ok: true, id: result.id, status: 'pending' } };
+        } catch (err) {
+          if (isProposeRejected(err)) {
+            return { status: 400, body: { ok: false, error: (err as Error).message } };
+          }
+          throw err;
+        }
+      }
       default:
         return { status: 400, body: { ok: false, error: `unknown op: ${op}` } };
     }
@@ -212,7 +257,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function handleObservation(id: string): Promise<DispatchResult> {
+async function handleObservation(
+  id: string,
+  client?: SupabaseClient
+): Promise<DispatchResult> {
   if (!UUID_RE.test(id)) {
     return { status: 400, body: { ok: false, error: 'invalid id' } };
   }
@@ -220,7 +268,7 @@ async function handleObservation(id: string): Promise<DispatchResult> {
   // endpoint and the MCP stdio tool are interchangeable. We intentionally
   // omit the `embedding` vector — it's useless for citations and inflates
   // the response by ~6 KB per row.
-  const supabase = getSupabase();
+  const supabase = client ?? getSupabase();
   const { data, error } = await supabase
     .from('memory_items')
     .select(
@@ -234,9 +282,9 @@ async function handleObservation(id: string): Promise<DispatchResult> {
   return { status: 200, body: data };
 }
 
-async function handleHealth(): Promise<DispatchResult> {
+async function handleHealth(client?: SupabaseClient): Promise<DispatchResult> {
   try {
-    const supabase = getSupabase();
+    const supabase = client ?? getSupabase();
     const { count } = await supabase
       .from('memory_items')
       .select('id', { count: 'exact', head: true })
@@ -273,6 +321,13 @@ async function handleHealth(): Promise<DispatchResult> {
 export interface WebhookServerOptions {
   port?: number;
   deps?: OpDeps;
+  /**
+   * Sprint 76 T1: override the Supabase client used by the two endpoints
+   * that don't go through OpDeps (GET /observation/:id and GET /healthz),
+   * so tests — the quarantine proof in particular — can drive them
+   * hermetically. Default: getSupabase().
+   */
+  client?: SupabaseClient;
 }
 
 export function startWebhookServer(opts: WebhookServerOptions = {}): Server {
@@ -290,13 +345,13 @@ export function startWebhookServer(opts: WebhookServerOptions = {}): Server {
       }
 
       if (req.method === 'GET' && url.pathname === '/healthz') {
-        const result = await handleHealth();
+        const result = await handleHealth(opts.client);
         return sendJson(res, result.status, result.body);
       }
 
       if (req.method === 'GET' && url.pathname.startsWith('/observation/')) {
         const id = decodeURIComponent(url.pathname.slice('/observation/'.length));
-        const result = await handleObservation(id);
+        const result = await handleObservation(id, opts.client);
         return sendJson(res, result.status, result.body);
       }
 
