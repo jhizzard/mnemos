@@ -98,6 +98,49 @@ test('dispatchOp remember forwards content and returns result', async () => {
   assert.equal(captured, 'Session started at 9am');
 });
 
+test('dispatchOp remember forwards source_agent (Sprint 74 T1 — the webhook used to drop it)', async () => {
+  let capturedAgent: string | null | undefined = 'sentinel-not-touched';
+  const deps = mockDeps({
+    remember: async (input) => {
+      capturedAgent = input.source_agent;
+      return 'inserted';
+    },
+  });
+
+  const result = await dispatchOp(
+    {
+      op: 'remember',
+      content: 'web-chat grok panel capture',
+      project: 'termdeck',
+      source_agent: 'grok-web',
+    },
+    deps
+  );
+  assert.equal(result.status, 200);
+  assert.equal(
+    capturedAgent,
+    'grok-web',
+    'TermDeck has sent source_agent since Sprint 50; the webhook must no longer silently null provenance'
+  );
+});
+
+test('dispatchOp remember without source_agent leaves the field undefined (back-compat)', async () => {
+  let capturedAgent: string | null | undefined = 'sentinel-not-touched';
+  const deps = mockDeps({
+    remember: async (input) => {
+      capturedAgent = input.source_agent;
+      return 'inserted';
+    },
+  });
+
+  const result = await dispatchOp(
+    { op: 'remember', content: 'a payload from an older hook build' },
+    deps
+  );
+  assert.equal(result.status, 200);
+  assert.equal(capturedAgent, undefined);
+});
+
 test('dispatchOp status returns report fields', async () => {
   const deps = mockDeps({
     status: async () => ({

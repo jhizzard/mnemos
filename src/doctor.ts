@@ -15,6 +15,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { evalDbEndpoint } from './db-endpoint.js';
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 export type ProbeStatus = 'green' | 'yellow' | 'red' | 'unknown';
@@ -114,6 +116,21 @@ export interface DoctorOptions {
   minCyclesBeforeFlag?: number;
   /** p95 latency threshold in seconds; >= → yellow. */
   latencyP95ThresholdSeconds?: number;
+  /**
+   * DATABASE_URL for the endpoint-shape probe (Sprint 74 T2). The CLI
+   * passes the resolved value (process env → ~/.termdeck/secrets.env via
+   * resolveDatabaseUrl); tests inject a literal or omit. runDoctor never
+   * reads process.env itself — ambient resolution stays at the CLI
+   * boundary so injected-fixture tests remain hermetic. Undefined →
+   * probe reports green/absent.
+   */
+  databaseUrl?: string;
+  /**
+   * Override the host's IPv6-capability signal (tests). Undefined → the
+   * probe computes it from os.networkInterfaces(), and only when the URL
+   * has the IPv6-only direct shape.
+   */
+  ipv6Capable?: boolean;
 }
 
 export interface DoctorReport {
@@ -583,6 +600,12 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
 
   // Probe 4 — MCP config path parity.
   results.push(evalMcpPathParity(fs, mcpPaths));
+
+  // Probe 5 — DATABASE_URL endpoint IPv4 safety (Sprint 74 T2, Brad R730
+  // field report): db.<project-ref>.supabase.co is AAAA-only, so a pasted
+  // direct/Dedicated-Pooler URL hangs until pool timeout on IPv4-only
+  // hosts. Shape-only check — no connection is opened.
+  results.push(evalDbEndpoint(opts.databaseUrl, opts.ipv6Capable));
 
   // Informational section — most-recent rumen_jobs rows. Not a probe verdict
   // (no green/red), just visibility into the rumen-tick log so an auditor

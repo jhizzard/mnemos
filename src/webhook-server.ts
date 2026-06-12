@@ -96,6 +96,12 @@ export async function dispatchOp(
           source_type: args.source_type as RememberInput['source_type'],
           category: (args.category ?? null) as RememberInput['category'],
           metadata: args.metadata as Record<string, unknown> | undefined,
+          // Sprint 74 T1: forward writer provenance. TermDeck's capture
+          // paths have sent this field since Sprint 50 (server index.js
+          // onPanelClose/periodic stamp `adapter.sourceAgent || name`);
+          // until now the webhook silently dropped it and rows landed
+          // with source_agent NULL. remember.ts normalizes the value.
+          source_agent: args.source_agent as RememberInput['source_agent'],
         });
         return { status: 200, body: { ok: true, result } };
       }

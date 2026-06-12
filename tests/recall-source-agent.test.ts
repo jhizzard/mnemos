@@ -20,6 +20,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { memoryRecall } from '../src/recall.js';
+import { SOURCE_AGENTS } from '../src/types.js';
 
 interface FakeRow {
   id: string;
@@ -276,4 +277,113 @@ test('include_null_source=true with source_agents omitted is a no-op (NULL rows 
     'no batch lookup should fire when filter is omitted, regardless of include_null_source'
   );
   assert.equal(out.hits.length, fixture.length);
+});
+
+// ─── Sprint 74 T1: web-surface source agents ────────────────────────────────
+//
+// claude-web / chatgpt-web / grok-web / gemini-web are distinct trust
+// domains from their CLI base agents. The filter is exact-match
+// (recall.ts `sourceAgents.includes(agent)`), so 'grok' and 'grok-web'
+// never cross-match in either direction. Only grok-web has a live producer
+// today (TermDeck's web-chat-grok panel, Sprint 73 T1); the other three
+// are forward declarations the filter must nonetheless round-trip.
+//
+// The MCP-boundary zod enum is DERIVED from SOURCE_AGENTS
+// (mcp-server/index.ts), and mcp-server/index.ts is side-effectful at
+// import (CLI entry), so the enum is not directly importable here. Pinning
+// SOURCE_AGENTS to the exact 9-value set therefore mechanically pins the
+// zod enum and the serialized MCP tool schema as well.
+
+// Contents are deliberately word-disjoint: the recall pipeline's
+// dedupByContent collapses rows whose word overlap exceeds 0.7, and
+// near-identical filler ("A grok CLI row" / "A grok web-chat row") gets
+// merged before the filter assertions ever see it.
+const webFixture: FakeRow[] = [
+  row('00000000-0000-0000-0000-000000000101', 'grok', 'CLI lane finished the migration audit'),
+  row('00000000-0000-0000-0000-000000000102', 'grok-web', 'browser panel captured a provenance flip'),
+  row('00000000-0000-0000-0000-000000000103', 'claude-web', 'web surface drafted the inbox proposal'),
+  row('00000000-0000-0000-0000-000000000104', 'chatgpt-web', 'external chat suggested pooler endpoints'),
+  row('00000000-0000-0000-0000-000000000105', 'gemini-web', 'second opinion summarized flush staleness'),
+  row('00000000-0000-0000-0000-000000000106', null, 'historical entry of unknown origin'),
+];
+
+test('SOURCE_AGENTS is pinned to the exact 9-value taxonomy (CLI 5 + web 4)', () => {
+  assert.deepEqual(SOURCE_AGENTS, [
+    'claude',
+    'codex',
+    'gemini',
+    'grok',
+    'orchestrator',
+    'claude-web',
+    'chatgpt-web',
+    'grok-web',
+    'gemini-web',
+  ]);
+});
+
+test('source_agents=["grok-web"] returns the grok-web row and NOT the grok CLI row', async () => {
+  const client = makeFakeClient(webFixture);
+
+  const out = await memoryRecall(
+    { query: 'find', source_agents: ['grok-web'] },
+    { client, generateEmbedding: fakeEmbed }
+  );
+
+  assert.equal(out.hits.length, 1);
+  assert.equal(out.hits[0]!.id, '00000000-0000-0000-0000-000000000102');
+});
+
+test('source_agents=["grok"] returns the grok CLI row and NOT the grok-web row (no prefix bleed)', async () => {
+  const client = makeFakeClient(webFixture);
+
+  const out = await memoryRecall(
+    { query: 'find', source_agents: ['grok'] },
+    { client, generateEmbedding: fakeEmbed }
+  );
+
+  assert.equal(out.hits.length, 1);
+  assert.equal(
+    out.hits[0]!.id,
+    '00000000-0000-0000-0000-000000000101',
+    'base-agent filter must not match the -web variant'
+  );
+});
+
+test('source_agents=["grok","grok-web"] returns the union of both trust domains', async () => {
+  const client = makeFakeClient(webFixture);
+
+  const out = await memoryRecall(
+    { query: 'find', source_agents: ['grok', 'grok-web'] },
+    { client, generateEmbedding: fakeEmbed }
+  );
+
+  const ids = out.hits.map((h) => h.id).sort();
+  assert.deepEqual(ids, [
+    '00000000-0000-0000-0000-000000000101',
+    '00000000-0000-0000-0000-000000000102',
+  ]);
+});
+
+test('all four web-surface values round-trip (forward declarations included)', async () => {
+  const client = makeFakeClient(webFixture);
+
+  const out = await memoryRecall(
+    {
+      query: 'find',
+      source_agents: ['claude-web', 'chatgpt-web', 'grok-web', 'gemini-web'],
+    },
+    { client, generateEmbedding: fakeEmbed }
+  );
+
+  const ids = out.hits.map((h) => h.id).sort();
+  assert.deepEqual(
+    ids,
+    [
+      '00000000-0000-0000-0000-000000000102',
+      '00000000-0000-0000-0000-000000000103',
+      '00000000-0000-0000-0000-000000000104',
+      '00000000-0000-0000-0000-000000000105',
+    ],
+    'every web value filters; grok CLI row and NULL historical row are excluded'
+  );
 });

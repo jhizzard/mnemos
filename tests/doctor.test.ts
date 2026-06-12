@@ -167,6 +167,7 @@ test('all-green path: healthy crons + canonical-only MCP + present schema → ex
     'graph-inference-tick latency',
     'schema drift',
     'MCP config path parity',
+    'DATABASE_URL endpoint',
   ]);
 });
 

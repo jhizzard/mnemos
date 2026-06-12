@@ -1,3 +1,16 @@
+## [0.5.0] - 2026-06-11
+
+### Added
+- Four web-surface `source_agents` values — `claude-web`, `chatgpt-web`, `grok-web`, `gemini-web` — across the full enforcement inventory (TS type + const, MCP Zod enum, recall filter, fixtures); migration `025_source_agent_web_surfaces.sql` (comment + verify; deliberately no CHECK constraint — column stays advisory text per the established taxonomy pattern). Only `grok-web` has a live producer today; the other three are forward declarations for the web-chat memory-inbox work.
+- Webhook write path now accepts and threads `source_agent` (`RememberInput` → dispatch → insert) — hook-written rows no longer land NULL.
+- `src/db-endpoint.ts` — DATABASE_URL endpoint classifier (direct IPv6-only `db.<ref>` vs IPv4 pooler shapes) + validate-and-warn at ingress + doctor probe 5; 29 URL-shape tests.
+- `src/reembed-hook-rows.ts` — batched, idempotent, resumable re-embed backfill for 3-small-embedded hook rows (marker: `metadata.embedding_model`), with runbook under `docs/runbooks/`. Live dry-run counted 545 pending rows.
+
+### Notes
+- Sprint 74 verdict (Grok auditor, FINAL-VERDICT GREEN): no read-after-write staleness anywhere — all auto-capture writers are synchronous embed→insert→commit and the bridge read path is cache-free; the only systemic lag is Rumen's by-design 15-min insight cycle. Clears the field-deployment cutover gate.
+- Run the re-embed backfill only AFTER the companion termdeck v1.9.0 hooks (session-end v5 / pre-compact v2, embed `text-embedding-3-large@1536`) are installed, or new mismatched rows keep arriving behind it.
+- Suite 128/128 over the merged sprint tree.
+
 # Changelog
 
 All notable changes to Mnestra will be documented in this file.
@@ -5,6 +18,29 @@ All notable changes to Mnestra will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+### Added — `privacy_tags` column + `include_privacy[]` recall filter (Brad's pka prerequisite)
+
+External request (Brad Heath, 2026-05-18): a non-breaking Mnestra schema change for the pka
+(Personal Knowledge Archive) project's F3 decision — exclude tagged-sensitive items from default
+recall, surface them only on explicit opt-in.
+
+- **Migration `023_privacy_tags_column.sql`** — adds `public.memory_items.privacy_tags text[] not
+  null default array[]::text[]` (open-ended categorical tags for sensitive content) + a GIN index on
+  the column. Re-creates `memory_hybrid_search` with `privacy_tags` appended to its RETURNS TABLE so
+  the recall layer can filter without a follow-up SELECT. The 8-input-arg RPC signature is unchanged;
+  the function is re-created via DROP+CREATE (Postgres forbids changing a return type via REPLACE),
+  preserving `SECURITY INVOKER`, `set search_path = public, extensions, pg_catalog`, and the
+  `REVOKE EXECUTE … FROM public, anon, authenticated` + targeted service-role `GRANT` hygiene from migration 019.
+- **`include_privacy?: string[]` recall filter** (`src/recall.ts`, `RecallInput`, `RecallHit`,
+  `memory_recall` MCP tool) — rows carrying any `privacy_tags` are excluded from recall by default;
+  an explicit `include_privacy: ['<tag>', …]` opts matching rows back in (any-overlap). Untagged rows
+  (the default empty array) are unaffected. Mirrors the Sprint 50 `source_agents` JS-layer filter,
+  reading `privacy_tags` directly off each RPC row (no follow-up SELECT / N+1).
+
+Non-breaking: every pre-existing row carries the empty-array default, so recall output is identical
+immediately post-migration. The exclude-by-default behavior is prospective — it applies only once a
+writer sets tags on a row.
 
 ### Planned
 - Web viewer UI for browsing memories (port 37777), matching the shape `claude-mem` ships.

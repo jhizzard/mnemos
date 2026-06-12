@@ -109,6 +109,15 @@ export async function memoryRecall(
       ? input.source_agents
       : null;
   const includeNullSource = input.include_null_source === true;
+  // Privacy-tags PR (Deck B) — opt-in list of privacy categories to surface.
+  // Same empty-array-==-omitted convention as source_agents above: an explicit
+  // `include_privacy: []` is "no opt-in" (a no-op), not "match nothing", so MCP
+  // clients that default the field to [] don't suppress tagged rows differently
+  // than omitting it would. null here means "no opt-in" → default-exclude.
+  const includePrivacy =
+    Array.isArray(input.include_privacy) && input.include_privacy.length > 0
+      ? input.include_privacy
+      : null;
 
   // Over-fetch so dedup + rank have material to work with.
   const fetchCount = Math.min(Math.max(Math.floor(budget / 50), 10), 40);
@@ -174,6 +183,26 @@ export async function memoryRecall(
     if (rows.length === 0) {
       return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
     }
+  }
+
+  // Privacy-tags PR (Deck B) — privacy_tags filter. Unlike source_agent,
+  // migration 023 extends memory_hybrid_search's RETURNS TABLE so each row
+  // already carries privacy_tags — no separate batch fetch, no extra Supabase
+  // round-trip. Read it as (row.privacy_tags ?? []) so unmigrated / not-yet-
+  // applied rows degrade to "untagged" rather than throw. Default behavior
+  // EXCLUDES any row carrying a privacy tag; an explicit include_privacy opt-in
+  // surfaces rows that share >=1 tag (any-overlap). Untagged rows (the common
+  // case) always pass — when include_privacy is omitted this is a bare
+  // length check, no set/intersection work. Applied AFTER the source_agent /
+  // null-source filters, consistent with the existing pipeline order.
+  rows = rows.filter((r) => {
+    const tags = r.privacy_tags ?? [];
+    if (tags.length === 0) return true; // untagged: always visible
+    if (!includePrivacy) return false; // default: hide tagged rows
+    return tags.some((t) => includePrivacy.includes(t)); // any-overlap opt-in
+  });
+  if (rows.length === 0) {
+    return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
   }
 
   // Pipeline: dedup -> rank. Do NOT drop anything on a score threshold here.
