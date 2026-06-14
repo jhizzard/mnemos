@@ -200,11 +200,38 @@ export interface ProposeResult {
   id: string;
 }
 
+/**
+ * Sprint 78 T3 (recall telemetry): which retrieval surface produced a
+ * recall-hit log row. Stored on `memory_recall_log.surface` (migration 027).
+ * MCP-stdio paths log their native surface; the webhook server stamps
+ * 'webhook' so over-the-wire recall is distinguishable in the telemetry.
+ */
+export type RecallSurface =
+  | 'recall'
+  | 'search'
+  | 'index'
+  | 'timeline'
+  | 'graph'
+  | 'webhook';
+
 export interface RecallInput {
   query: string;
   project?: string | null;
   token_budget?: number;
   min_results?: number;
+  /**
+   * Sprint 78 T3 (recall telemetry) — fire-and-forget log context. These do
+   * NOT affect retrieval; they only tag the recall-hit log rows written AFTER
+   * the result is built (the write is never awaited, so recall latency is
+   * unchanged). `log_surface` lets the webhook stamp over-the-wire recall as
+   * 'webhook'; the MCP-stdio path leaves it undefined and the log falls back
+   * to the native surface. `log_session_id` / `log_source_agent` carry caller
+   * provenance when the client supplies it (NULL otherwise). Named `log_*` to
+   * avoid any confusion with the `source_agents` retrieval FILTER above.
+   */
+  log_surface?: RecallSurface;
+  log_session_id?: string | null;
+  log_source_agent?: string | null;
   /**
    * Filter results by the source agent that produced each row. Omit (or
    * pass an empty array) for no filter — the default, returns all agents.
@@ -260,6 +287,10 @@ export interface SearchInput {
   project?: string | null;
   source_type?: SourceType | null;
   limit?: number;
+  /** Sprint 78 T3 (recall telemetry) — see RecallInput.log_surface. */
+  log_surface?: RecallSurface;
+  log_session_id?: string | null;
+  log_source_agent?: string | null;
 }
 
 export interface StatusReport {

@@ -176,7 +176,10 @@ test('dispatchOp recall requires question or query', async () => {
 });
 
 test('POST /mnestra with malformed JSON returns 400, not 500', async () => {
-  const server = startWebhookServer({ port: 0, deps: mockDeps() });
+  // Sprint 78 T3: the webhook now requires the shared secret (auth gate runs
+  // before body parsing), so authenticate first — the point of this test is
+  // the 400 (bad JSON) path, which is only reachable past the gate.
+  const server = startWebhookServer({ port: 0, secret: 'wh-test-secret', deps: mockDeps() });
   await new Promise<void>((resolve) => {
     if (server.listening) resolve();
     else server.once('listening', () => resolve());
@@ -185,7 +188,7 @@ test('POST /mnestra with malformed JSON returns 400, not 500', async () => {
     const { port } = server.address() as AddressInfo;
     const res = await fetch(`http://127.0.0.1:${port}/mnestra`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-mnestra-secret': 'wh-test-secret' },
       body: 'not json',
     });
     assert.equal(res.status, 400);

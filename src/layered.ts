@@ -14,8 +14,9 @@
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import { logRecallHits, markRecallCited } from './recall_log.js';
 import type { RecallDeps } from './recall.js';
-import type { MemoryItem, RecallHit, SourceType } from './types.js';
+import type { MemoryItem, RecallHit, RecallSurface, SourceType } from './types.js';
 
 const SNIPPET_MAX = 120;
 const INDEX_DEFAULT_LIMIT = 20;
@@ -43,6 +44,13 @@ export interface IndexInput {
   project?: string | null;
   source_type?: SourceType | null;
   limit?: number;
+  /**
+   * Sprint 78 T3: telemetry surface for this index call; `null` SUPPRESSES the
+   * fire-and-forget log entirely. memoryTimeline's internal anchor probe passes
+   * `null` so the anchor isn't double-counted (once as a phantom 'index' hit,
+   * once in the timeline window).
+   */
+  log_surface?: RecallSurface | null;
 }
 
 export interface TimelineInput {
@@ -109,7 +117,17 @@ export async function memoryIndex(
     return [];
   }
 
-  return ((data ?? []) as RecallHit[]).map(toIndexHit);
+  const rows = (data ?? []) as RecallHit[];
+  // Sprint 78 T3 — fire-and-forget index-surface telemetry (returned set).
+  // log_surface:null suppresses it (memoryTimeline's anchor probe) so the
+  // anchor isn't double-counted as a phantom 'index' hit.
+  if (input.log_surface !== null) {
+    logRecallHits(
+      rows.map((m, i) => ({ memory_id: m.id, score: m.score, rank: i + 1 })),
+      { surface: input.log_surface ?? 'index', query }
+    );
+  }
+  return rows.map(toIndexHit);
 }
 
 /**
@@ -147,7 +165,9 @@ export async function memoryTimeline(
     anchorProject = (data as { project: string }).project;
     anchorCreatedAt = (data as { created_at: string }).created_at;
   } else if (input.query) {
-    const hits = await memoryIndex({ query: input.query, limit: 1 }, deps);
+    // log_surface:null — this is an internal anchor probe, not a user 'index'
+    // call; suppress its telemetry so the anchor isn't double-counted.
+    const hits = await memoryIndex({ query: input.query, limit: 1, log_surface: null }, deps);
     if (hits.length === 0) return [];
     const top = hits[0]!;
     anchorProject = top.project;
@@ -176,13 +196,23 @@ export async function memoryTimeline(
     return [];
   }
 
-  return ((rows ?? []) as Array<{
+  const windowRows = (rows ?? []) as Array<{
     id: string;
     content: string;
     source_type: string;
     project: string;
     created_at: string;
-  }>).map(toIndexHit);
+  }>;
+
+  // Sprint 78 T3 — fire-and-forget timeline-surface telemetry. The query is
+  // the anchor query (or the around_id when query-less). No per-row score on
+  // the window query, so rank only.
+  logRecallHits(
+    windowRows.map((m, i) => ({ memory_id: m.id, rank: i + 1 })),
+    { surface: 'timeline', query: input.query ?? input.around_id ?? '' }
+  );
+
+  return windowRows.map(toIndexHit);
 }
 
 /** memory_get — batch fetch full rows by UUID. Batch-only to discourage N+1. */
@@ -219,5 +249,12 @@ export async function memoryGet(
     console.error('[mnestra-get] batch fetch failed:', error.message);
     return [];
   }
-  return (data ?? []) as MemoryItem[];
+  const rows = (data ?? []) as MemoryItem[];
+
+  // Sprint 78 T3 — a memory_get is the STRONGEST "this memory was actually
+  // used" signal. Flip cited=true on each fetched row's most-recent recall-log
+  // entry (fire-and-forget; never awaited; swallows all errors).
+  markRecallCited(rows.map((r) => r.id));
+
+  return rows;
 }

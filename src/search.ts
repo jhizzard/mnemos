@@ -8,6 +8,7 @@
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import { logRecallHits } from './recall_log.js';
 import type { RecallDeps } from './recall.js';
 import type { RecallHit, SearchInput } from './types.js';
 
@@ -39,5 +40,19 @@ export async function memorySearch(
     return [];
   }
 
-  return (data ?? []) as RecallHit[];
+  const hits = (data ?? []) as RecallHit[];
+
+  // Sprint 78 T3 — fire-and-forget recall telemetry on the returned set.
+  // Never awaited; failures swallowed. surface 'webhook' over the wire.
+  logRecallHits(
+    hits.map((m, i) => ({ memory_id: m.id, score: m.score, rank: i + 1 })),
+    {
+      surface: input.log_surface ?? 'search',
+      query,
+      sourceSessionId: input.log_session_id ?? null,
+      sourceAgent: input.log_source_agent ?? null,
+    }
+  );
+
+  return hits;
 }

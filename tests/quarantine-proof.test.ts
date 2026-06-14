@@ -538,7 +538,17 @@ test('quarantine proof: GET /observation/<inbox-uuid> is 404; /healthz counts ca
   const store = makeStore();
   const probe: Probe = { tablesRequested: [], rpcCalls: [] };
   const client = makeClient(store, probe);
-  const server = startWebhookServer({ port: 0, deps: realOpDeps(client), client });
+  // Sprint 78 T3: /observation is a memory-content read path → now behind the
+  // shared secret. Authenticate those reads; /healthz stays exempt (asserted
+  // below by NOT sending the header).
+  const QP_SECRET = 'quarantine-test-secret';
+  const QP_AUTH = { 'x-mnestra-secret': QP_SECRET };
+  const server = startWebhookServer({
+    port: 0,
+    secret: QP_SECRET,
+    deps: realOpDeps(client),
+    client,
+  });
   await new Promise<void>((resolve) => {
     if (server.listening) resolve();
     else server.once('listening', () => resolve());
@@ -547,7 +557,7 @@ test('quarantine proof: GET /observation/<inbox-uuid> is 404; /healthz counts ca
     const { port } = server.address() as AddressInfo;
     const base = `http://127.0.0.1:${port}`;
 
-    const obsInbox = await fetch(`${base}/observation/${INBOX_PENDING_ID}`);
+    const obsInbox = await fetch(`${base}/observation/${INBOX_PENDING_ID}`, { headers: QP_AUTH });
     assert.equal(
       obsInbox.status,
       404,
@@ -555,10 +565,11 @@ test('quarantine proof: GET /observation/<inbox-uuid> is 404; /healthz counts ca
     );
     assertClean('GET /observation/<inbox-uuid>', await obsInbox.json());
 
-    const obsCanonical = await fetch(`${base}/observation/${ITEM_A}`);
+    const obsCanonical = await fetch(`${base}/observation/${ITEM_A}`, { headers: QP_AUTH });
     assert.equal(obsCanonical.status, 200, 'sanity: canonical rows resolve');
     assertClean('GET /observation/<canonical-uuid>', await obsCanonical.json());
 
+    // /healthz unauthenticated — proves the liveness exemption.
     const health = await fetch(`${base}/healthz`);
     const healthBody = (await health.json()) as { store: { rows: number } };
     assert.equal(health.status, 200);
