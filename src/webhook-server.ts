@@ -21,9 +21,14 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { memoryRecall, type RecallOutput } from './recall.js';
+import { recordRecallFeedback } from './recall_log.js';
 import { memoryRemember } from './remember.js';
 import { memoryPropose, isProposeRejected } from './propose.js';
 import { memorySearch } from './search.js';
@@ -64,6 +69,15 @@ export interface OpDeps {
   get: (input: GetInput) => Promise<MemoryItem[]>;
   /** Sprint 76 T1: quarantined web-proposal channel (memory_inbox only). */
   propose: (input: ProposeInput) => Promise<ProposeResult>;
+  /**
+   * Sprint 78 T3: recall-telemetry feedback receiver (fire-and-forget). The
+   * `op:'feedback'` handler calls this; the default impl marks the memory's
+   * most-recent recall-log row cited/dismissed. Void return — never awaited,
+   * never affects the HTTP response latency. Optional so existing test deps
+   * objects (which predate it) still typecheck; the handler invokes it as
+   * `deps.feedback?.(…)`.
+   */
+  feedback?: (memoryId: string, event: 'cited' | 'dismissed') => void;
 }
 
 export const defaultDeps: OpDeps = {
@@ -75,6 +89,7 @@ export const defaultDeps: OpDeps = {
   timeline: memoryTimeline,
   get: memoryGet,
   propose: memoryPropose,
+  feedback: (memoryId, event) => recordRecallFeedback(memoryId, event),
 };
 
 export interface DispatchResult {
@@ -130,6 +145,11 @@ export async function dispatchOp(
           project: (args.project ?? null) as string | null,
           token_budget: args.token_budget as number | undefined,
           min_results: args.min_results as number | undefined,
+          // Sprint 78 T3 — tag over-the-wire recall so the telemetry log
+          // distinguishes webhook-sourced recall from MCP-stdio recall.
+          log_surface: 'webhook',
+          log_session_id: (args.source_session_id ?? null) as string | null,
+          log_source_agent: (args.source_agent ?? null) as string | null,
         });
         return {
           status: 200,
@@ -146,6 +166,10 @@ export async function dispatchOp(
           project: (args.project ?? null) as string | null,
           source_type: (args.source_type ?? null) as SearchInput['source_type'],
           limit: args.limit as number | undefined,
+          // Sprint 78 T3 — tag over-the-wire search (see recall above).
+          log_surface: 'webhook',
+          log_session_id: (args.source_session_id ?? null) as string | null,
+          log_source_agent: (args.source_agent ?? null) as string | null,
         });
         return { status: 200, body: { ok: true, hits } };
       }
@@ -212,6 +236,28 @@ export async function dispatchOp(
           }
           throw err;
         }
+      }
+      case 'feedback': {
+        // Sprint 78 T3 — recall-telemetry feedback receiver (HANDOFF seam with
+        // T2's flashback "clicked" route; T3 owns the server end-to-end per
+        // PLANNING §8.3). Validate strictly, then fire the signal
+        // fire-and-forget so the 200 is never gated on a DB round-trip.
+        const memoryId = args.memory_id as string | undefined;
+        const event = args.event as string | undefined;
+        if (!memoryId || !UUID_RE.test(memoryId)) {
+          return {
+            status: 400,
+            body: { ok: false, error: 'feedback requires a valid memory_id (uuid)' },
+          };
+        }
+        if (event !== 'cited' && event !== 'dismissed') {
+          return {
+            status: 400,
+            body: { ok: false, error: "feedback event must be 'cited' or 'dismissed'" },
+          };
+        }
+        deps.feedback?.(memoryId, event);
+        return { status: 200, body: { ok: true, recorded: event } };
       }
       default:
         return { status: 400, body: { ok: false, error: `unknown op: ${op}` } };
@@ -318,6 +364,90 @@ async function handleHealth(client?: SupabaseClient): Promise<DispatchResult> {
   }
 }
 
+// ── Shared-secret auth (Sprint 78 T3, ITEM ZERO) ───────────────────────────
+//
+// The webhook is the network ingress to the memory store. Before Sprint 78 it
+// had NO auth and bound all interfaces — anything that could reach :37778 could
+// poison the corpus (writes) or exfiltrate it (reads). The gate: a shared
+// secret read once at boot from MNESTRA_WEBHOOK_SECRET (env, else
+// ~/.termdeck/secrets.env), checked on every route except /healthz with a
+// constant-time compare. Fail-CLOSED for the network (no secret configured ⇒
+// every request 401), fail-SOFT for the process (log once, never crash).
+
+const WEBHOOK_SECRET_ENV = 'MNESTRA_WEBHOOK_SECRET';
+
+/**
+ * Tiny KEY=VALUE reader for ~/.termdeck/secrets.env. No new dependency;
+ * ignores blank lines + `#` comments; strips one layer of surrounding quotes.
+ */
+function parseEnvFile(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      val.length >= 2 &&
+      ((val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'")))
+    ) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+/** Resolve the configured secret: env first, then ~/.termdeck/secrets.env. */
+function loadWebhookSecret(): string | null {
+  const fromEnv = process.env[WEBHOOK_SECRET_ENV];
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) return fromEnv.trim();
+  try {
+    const path = join(homedir(), '.termdeck', 'secrets.env');
+    const parsed = parseEnvFile(readFileSync(path, 'utf8'));
+    const v = parsed[WEBHOOK_SECRET_ENV];
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+  } catch {
+    // fail-soft: file missing / unreadable → treated as "no secret configured"
+    // (the caller then rejects every request — fail-closed for the network).
+  }
+  return null;
+}
+
+/** Extract the presented secret from the x-mnestra-secret or Bearer header. */
+function presentedSecret(req: IncomingMessage): string | null {
+  const direct = req.headers['x-mnestra-secret'];
+  if (typeof direct === 'string' && direct.length > 0) return direct;
+  const auth = req.headers['authorization'];
+  if (typeof auth === 'string') {
+    const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
+    if (m && m[1]) return m[1];
+  }
+  return null;
+}
+
+/**
+ * Constant-time secret comparison. timingSafeEqual demands equal-length
+ * buffers, so compare fixed-length SHA-256 digests — neither the secret value
+ * NOR its length leaks via an early-out.
+ */
+function secretsMatch(presented: string, configured: string): boolean {
+  const a = createHash('sha256').update(presented).digest();
+  const b = createHash('sha256').update(configured).digest();
+  return timingSafeEqual(a, b);
+}
+
+/** Authorize a request against the configured secret. Fail-closed. */
+function isAuthorized(req: IncomingMessage, configured: string | null): boolean {
+  if (!configured) return false; // fail-closed: no secret set ⇒ reject all
+  const presented = presentedSecret(req);
+  if (presented === null) return false;
+  return secretsMatch(presented, configured);
+}
+
 export interface WebhookServerOptions {
   port?: number;
   deps?: OpDeps;
@@ -328,15 +458,62 @@ export interface WebhookServerOptions {
    * hermetically. Default: getSupabase().
    */
   client?: SupabaseClient;
+  /**
+   * Sprint 78 T3: override the shared secret (tests). Default: env
+   * MNESTRA_WEBHOOK_SECRET, else ~/.termdeck/secrets.env. When unset/empty the
+   * server runs fail-closed — every request is rejected 401.
+   */
+  secret?: string;
+  /**
+   * Sprint 78 T3: override the bind host (tests / LAN). Default: env
+   * MNESTRA_WEBHOOK_HOST / MNESTRA_WEBHOOK_BIND, else 127.0.0.1.
+   */
+  host?: string;
 }
 
 export function startWebhookServer(opts: WebhookServerOptions = {}): Server {
   const port = opts.port ?? Number(process.env.MNESTRA_WEBHOOK_PORT ?? 37778);
   const deps = opts.deps ?? defaultDeps;
 
+  // Sprint 78 T3 — resolve the shared secret + bind host once at boot.
+  const secret = opts.secret ?? loadWebhookSecret();
+  if (!secret) {
+    console.error(
+      `[mnestra-webhook] ${WEBHOOK_SECRET_ENV} is not set (checked env + ~/.termdeck/secrets.env). ` +
+        `Running fail-closed: every request returns 401 until the secret is configured.`
+    );
+  }
+  // Default to loopback-only. The LAN override (MNESTRA_WEBHOOK_HOST /
+  // MNESTRA_WEBHOOK_BIND, e.g. '0.0.0.0') is intentionally undocumented in user
+  // docs — it's only for a deliberate second-machine deployment, where the
+  // shared secret above is what keeps the endpoint from being an open
+  // memory-poisoning / exfiltration surface (PLANNING §2 dec. 6).
+  // `.trim() || '127.0.0.1'` is load-bearing: `??` only catches null/undefined,
+  // so a bare `export MNESTRA_WEBHOOK_HOST=` (empty string) would slip through
+  // and `server.listen(port, '')` binds ALL interfaces — silently defeating the
+  // loopback-only default. Collapse empty/whitespace back to 127.0.0.1.
+  const host =
+    (
+      opts.host ??
+      process.env.MNESTRA_WEBHOOK_HOST ??
+      process.env.MNESTRA_WEBHOOK_BIND ??
+      '127.0.0.1'
+    ).trim() || '127.0.0.1';
+
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+
+      // Sprint 78 T3 ITEM ZERO — auth gate. Runs BEFORE any routing, so no op
+      // executes and no memory content is returned without the secret. Only
+      // the /healthz liveness probe is exempt (aggregate counts, no content).
+      // This covers POST /mnestra (every op via dispatchOp) AND the
+      // GET /observation/:id read-exfil path. Loopback presents the secret too
+      // — no IP-based bypass, keeping the contract uniform for the Sprint 79
+      // materializer and T2's feedback POST.
+      if (url.pathname !== '/healthz' && !isAuthorized(req, secret)) {
+        return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      }
 
       if (req.method === 'POST' && url.pathname === '/mnestra') {
         const body = await readJsonBody(req);
@@ -376,8 +553,8 @@ export function startWebhookServer(opts: WebhookServerOptions = {}): Server {
     throw err;
   });
 
-  server.listen(port, () => {
-    console.error(`[mnestra-webhook] listening on :${port}`);
+  server.listen(port, host, () => {
+    console.error(`[mnestra-webhook] listening on ${host}:${port}`);
   });
 
   const shutdown = (signal: string) => {

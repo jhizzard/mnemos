@@ -17,6 +17,7 @@
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import { logRecallHits } from './recall_log.js';
 import type { RecallDeps } from './recall.js';
 
 const DEFAULT_DEPTH = 2;
@@ -119,6 +120,13 @@ export async function memoryRecallGraph(
   const header = `${rows.length} memories (graph-recall, ${distSummary}${
     project ? `, project: ${project}` : ', all projects'
   }):`;
+
+  // Sprint 78 T3 — fire-and-forget graph-surface telemetry. The full returned
+  // set (graph hits use `memory_id` + `final_score`). Never awaited.
+  logRecallHits(
+    rows.map((m, i) => ({ memory_id: m.memory_id, score: m.final_score, rank: i + 1 })),
+    { surface: 'graph', query }
+  );
 
   return {
     hits: rows,

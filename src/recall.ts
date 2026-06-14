@@ -14,6 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import { logRecallHits } from './recall_log.js';
 import type { RecallHit, RecallInput } from './types.js';
 
 export interface RecallDeps {
@@ -241,6 +242,22 @@ export async function memoryRecall(
   const header = `${kept.length} memories (${tokensUsed} tokens${
     project ? `, project: ${project}` : ', all projects'
   }):`;
+
+  // Sprint 78 T3 — fire-and-forget recall telemetry. Log the RETURNED SET
+  // ONLY (`kept`, after dedup/rank/token-budget — NOT the 10–40 over-fetched
+  // candidate rows from memory_hybrid_search). Never awaited, so recall
+  // latency is byte-for-byte unchanged; failures are swallowed inside
+  // logRecallHits. `log_surface` is 'webhook' when the call arrived over the
+  // wire, else the native 'recall'.
+  logRecallHits(
+    kept.map((m, i) => ({ memory_id: m.id, score: m.score, rank: i + 1 })),
+    {
+      surface: input.log_surface ?? 'recall',
+      query,
+      sourceSessionId: input.log_session_id ?? null,
+      sourceAgent: input.log_source_agent ?? null,
+    }
+  );
 
   return {
     hits: kept,

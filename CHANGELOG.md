@@ -1,3 +1,15 @@
+## [0.7.0] - 2026-06-13
+
+### Added
+- **Recall-hit telemetry** (migration `027_recall_telemetry.sql`) — `memory_recall_log` table + `log_recall_hits(jsonb)` / `mark_recall_feedback(jsonb,text)` / `purge_recall_log(int)` RPCs (all five-gate: RLS enabled, no PUBLIC, REVOKE-then-GRANT service_role, pinned `search_path`, hard-failing apply receipt) + denormalized `recall_count` / `last_recalled_at` on `memory_items` (statement-level bumps, no hot-row storms) + 90-day pg_cron purge. **Fire-and-forget** (never awaited — recall latency unchanged) write points in `recall.ts` (returned-set only, not over-fetched candidates), `search.ts`, `layered.ts`, `recall_graph.ts`, and webhook surface tagging; `memory_get` marks `cited=true`; new `op:'feedback'` webhook op. `query_preview` is gitleaks-shape redacted (incl. `Bearer <token>`). This is the substrate that makes "which stored memory is never recalled" computable (Sprint 78 T3).
+
+### Security / Changed
+- **Webhook hardening (item zero):** shared-secret gate (read from `~/.termdeck/secrets.env`; `x-mnestra-secret` or `Authorization: Bearer`; constant-time compare; **fail-CLOSED** when the secret is absent) enforced before every op except `/healthz`; default bind **127.0.0.1** (`MNESTRA_WEBHOOK_HOST` override, with an `''`→loopback guard). Previously the `:37778` webhook was unauthenticated and bound all interfaces — a remote memory-poisoning endpoint on a second machine.
+- **Telemetry test-isolation:** `MNESTRA_DISABLE_RECALL_LOG=1` (set by the test script) prevents the fire-and-forget recall-log writes from reaching a live DB in a credentialed shell — without it, `npm test` would poison `memory_recall_log` the instant migration 027 is applied.
+
+### Notes
+- Sprint 78 T3, FINAL-VERDICT GREEN (Codex auditor) after an adversarial self-review hardening pass. `npm test` **219/219, 0 fail**; `tsc` exit 0; gitleaks 0; migration 027 five-gate receipt execution-verified by rollback-apply. Companions: `@jhizzard/termdeck@1.11.0` + `@jhizzard/termdeck-stack@1.9.0` (doctrine registry + advisor MVP). **Migration 027 NOT yet applied to any prod DB** — operator step (the hard-failing receipt verifies all five gates at apply time).
+
 ## [0.6.0] - 2026-06-12
 
 ### Added

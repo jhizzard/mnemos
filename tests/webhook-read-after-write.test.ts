@@ -45,6 +45,10 @@ import { memoryRemember } from '../src/remember.js';
 import { memoryRecall } from '../src/recall.js';
 import type { RememberInput } from '../src/types.js';
 
+// Sprint 78 T3: the webhook now requires the shared secret. These tests drive
+// the REAL HTTP server, so every POST authenticates with the test secret.
+const RAW_SECRET = 'raw-test-secret';
+
 interface StoreRow {
   id: string;
   content: string;
@@ -173,7 +177,7 @@ test('write→200→recall is synchronous: the row is committed before the 200 a
       memoryRecall(input, { client: store.client, generateEmbedding: fakeEmbed }),
     ...unusedOps(),
   };
-  const server = startWebhookServer({ port: 0, deps });
+  const server = startWebhookServer({ port: 0, secret: RAW_SECRET, deps });
   try {
     const url = await listen(server);
 
@@ -181,7 +185,7 @@ test('write→200→recall is synchronous: the row is committed before the 200 a
     //    memory_remember and any webhook client lands on).
     const writeRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-mnestra-secret': RAW_SECRET },
       body: JSON.stringify({
         op: 'remember',
         content: PROBE_CONTENT,
@@ -204,7 +208,7 @@ test('write→200→recall is synchronous: the row is committed before the 200 a
     //    calling the bridge right after a capture does.
     const recallRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-mnestra-secret': RAW_SECRET },
       body: JSON.stringify({ op: 'recall', question: PROBE_QUERY, project: 'staleness-probe' }),
     });
     assert.equal(recallRes.status, 200);
@@ -245,13 +249,13 @@ test('SENSITIVITY CONTROL: a fire-and-forget remember (200 before commit) makes 
       memoryRecall(input, { client: store.client, generateEmbedding: fakeEmbed }),
     ...unusedOps(),
   };
-  const server = startWebhookServer({ port: 0, deps });
+  const server = startWebhookServer({ port: 0, secret: RAW_SECRET, deps });
   try {
     const url = await listen(server);
 
     const writeRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-mnestra-secret': RAW_SECRET },
       body: JSON.stringify({
         op: 'remember',
         content: PROBE_CONTENT,
@@ -265,7 +269,7 @@ test('SENSITIVITY CONTROL: a fire-and-forget remember (200 before commit) makes 
 
     const recallRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-mnestra-secret': RAW_SECRET },
       body: JSON.stringify({ op: 'recall', question: PROBE_QUERY, project: 'staleness-probe' }),
     });
     const body = (await recallRes.json()) as { ok: boolean; hits: unknown[] };
@@ -278,7 +282,7 @@ test('SENSITIVITY CONTROL: a fire-and-forget remember (200 before commit) makes 
     assert.equal(store.rows.length, 1);
     const lateRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-mnestra-secret': RAW_SECRET },
       body: JSON.stringify({ op: 'recall', question: PROBE_QUERY, project: 'staleness-probe' }),
     });
     const lateBody = (await lateRes.json()) as { ok: boolean; hits: unknown[] };
