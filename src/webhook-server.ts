@@ -132,6 +132,13 @@ export async function dispatchOp(
           // until now the webhook silently dropped it and rows landed
           // with source_agent NULL. remember.ts normalizes the value.
           source_agent: args.source_agent as RememberInput['source_agent'],
+          // Sprint 79 T1 — same expansion as the MCP memory_remember tool,
+          // for parity between the two write surfaces.
+          sprint_ref: args.sprint_ref as RememberInput['sprint_ref'],
+          rule_ref: args.rule_ref as RememberInput['rule_ref'],
+          supersedes: args.supersedes as RememberInput['supersedes'],
+          force: args.force as RememberInput['force'],
+          refresh: args.refresh as RememberInput['refresh'],
         });
         return { status: 200, body: { ok: true, result } };
       }

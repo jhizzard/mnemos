@@ -107,11 +107,19 @@ function makeFakeStore(opts: { insertDelayMs?: number } = {}): FakeStore {
       return {
         insert: (row: Record<string, unknown>) => {
           events.push('insert:start');
+          // Sprint 79 T1: memoryRemember's insert path now chains
+          // .select('id').maybeSingle() (it needs the new row's id for the
+          // best-effort rule_ref/supersedes post-write links), matching how
+          // consolidate.ts already calls insert() on the real supabase-js
+          // client. The row must still land in `rows` — and 'insert:committed'
+          // still fire — strictly before maybeSingle() resolves, so this
+          // test's commit-before-200 ordering assertions stay meaningful.
           const p = (async () => {
             await tick();
             if (opts.insertDelayMs) await delay(opts.insertDelayMs);
+            const id = `00000000-0000-0000-0000-${String(nextId++).padStart(12, '0')}`;
             rows.push({
-              id: `00000000-0000-0000-0000-${String(nextId++).padStart(12, '0')}`,
+              id,
               content: String(row.content),
               source_type: String(row.source_type),
               category: (row.category as string | null) ?? null,
@@ -122,9 +130,14 @@ function makeFakeStore(opts: { insertDelayMs?: number } = {}): FakeStore {
               privacy_tags: [],
             });
             events.push('insert:committed');
+            return id;
           })();
           pendingInserts.push(p.then(() => undefined));
-          return p.then(() => ({ error: null }));
+          return {
+            select: (_cols: string) => ({
+              maybeSingle: async () => ({ data: { id: await p }, error: null }),
+            }),
+          };
         },
       };
     },

@@ -14,6 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
+import { classifyGranularity } from './granularity.js';
 import { logRecallHits } from './recall_log.js';
 import type { RecallHit, RecallInput } from './types.js';
 
@@ -77,6 +78,16 @@ function smartRank(results: RecallHit[]): RecallHit[] {
     const impA = IMPORTANCE_RANK[(a.metadata as { importance?: string })?.importance ?? ''] ?? 1;
     const impB = IMPORTANCE_RANK[(b.metadata as { importance?: string })?.importance ?? ''] ?? 1;
     if (impB !== impA) return impB - impA;
+
+    // Sprint 79 T1 (capture gates): granularity tiebreak. A recipe-graded hit
+    // (specific-instance: file:line/sprint/version noise, no kitchen marker)
+    // sorts below an otherwise-tied kitchen/unknown hit — 'unknown' is never
+    // downweighted, only a confident 'recipe' verdict is. This is the sole
+    // consumer that makes granularity.ts's classifier real; it only breaks
+    // ties already established above, never overrides type/importance rank.
+    const recipeA = classifyGranularity(a.content).granularity === 'recipe';
+    const recipeB = classifyGranularity(b.content).granularity === 'recipe';
+    if (recipeA !== recipeB) return recipeA ? 1 : -1;
 
     return (b.score || 0) - (a.score || 0);
   });

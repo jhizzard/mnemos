@@ -240,15 +240,67 @@ server.registerTool(
         .enum(['fact', 'decision', 'preference', 'bug_fix', 'architecture', 'code_context'])
         .default('fact')
         .describe('Type of memory'),
+      metadata: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('Arbitrary structured metadata to attach (shallow-merged on a dedup reinforcement, never dropped).'),
+      // Sprint 79 T1: loose string, NOT the closed SourceAgent enum — mirrors
+      // RememberInput.source_agent's loose-at-core design (normalizeSourceAgent
+      // stores a well-formed-but-unknown agent as-is rather than rejecting it).
+      source_agent: z
+        .string()
+        .optional()
+        .describe('Provenance of the writer (e.g. claude, codex, orchestrator). Unknown-but-well-formed values are stored as-is, not rejected.'),
+      sprint_ref: z
+        .string()
+        .optional()
+        .describe('Which sprint produced/reinforced this memory. On a dedup reinforcement, a supplied value updates the row; omitted preserves the existing one.'),
+      rule_ref: z
+        .string()
+        .uuid()
+        .optional()
+        .describe('UUID of an existing "rule" memory this write amends. Auto-creates an amends_rule link edge (best-effort).'),
+      supersedes: z
+        .string()
+        .uuid()
+        .optional()
+        .describe('UUID of an existing memory this write directly replaces. The referenced row is marked superseded_by/is_active=false and linked (best-effort).'),
+      force: z
+        .boolean()
+        .optional()
+        .describe('Bypass near-duplicate detection entirely and always insert a fresh row. Rare escape hatch — default false.'),
+      refresh: z
+        .boolean()
+        .optional()
+        .describe('Only meaningful when a near-duplicate is found: let the new content replace the canonical content instead of the default keep-canonical-and-reinforce behavior.'),
     },
   },
-  async ({ text, project, category, source_type }) => {
+  async ({
+    text,
+    project,
+    category,
+    source_type,
+    metadata,
+    source_agent,
+    sprint_ref,
+    rule_ref,
+    supersedes,
+    force,
+    refresh,
+  }) => {
     try {
       const result = await memoryRemember({
         content: text,
         project: project || 'global',
         source_type: source_type || 'fact',
         category: category ?? null,
+        metadata,
+        source_agent,
+        sprint_ref,
+        rule_ref,
+        supersedes,
+        force,
+        refresh,
       });
       return {
         content: [
@@ -403,7 +455,7 @@ server.registerTool(
       query: z.string().describe('Search query'),
       project: z.string().optional().describe('Filter by project'),
       source_type: z
-        .enum(['fact', 'decision', 'preference', 'bug_fix', 'architecture', 'code_context'])
+        .enum(['fact', 'decision', 'preference', 'bug_fix', 'architecture', 'code_context', 'doctrine'])
         .optional()
         .describe('Filter by source type'),
       limit: z.number().default(20).describe('Max results'),
@@ -530,7 +582,7 @@ server.registerTool(
       query: z.string().describe('Search query'),
       project: z.string().optional().describe('Filter by project'),
       source_type: z
-        .enum(['fact', 'decision', 'preference', 'bug_fix', 'architecture', 'code_context'])
+        .enum(['fact', 'decision', 'preference', 'bug_fix', 'architecture', 'code_context', 'doctrine'])
         .optional()
         .describe('Filter by source type'),
       limit: z.number().default(20).describe('Max results'),
@@ -632,6 +684,8 @@ const RELATIONSHIP_KIND_ENUM = z.enum([
   'blocks',
   'inspired_by',
   'cross_project_link',
+  'elevated_to',
+  'amends_rule',
 ]);
 
 server.registerTool(

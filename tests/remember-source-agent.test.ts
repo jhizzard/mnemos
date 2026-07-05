@@ -29,9 +29,18 @@ interface InsertProbe {
   updated: { payload: Record<string, unknown>; id: string }[];
 }
 
+/**
+ * Sprint 79 T1: memoryRemember now does two extra chained calls this fake
+ * must support — `.insert(...).select('id').maybeSingle()` (post-write
+ * rule_ref/supersedes links need the new row's id) and, on a dedup match,
+ * `.select('reinforcement_count').eq('id', ...).maybeSingle()` (match_memories
+ * doesn't return that column). `existingReinforcementCount` lets a test pin
+ * what the fake reports back for the merge-band tests below.
+ */
 function makeFakeClient(
   probe: InsertProbe,
-  similar: { id: string; similarity: number }[] = []
+  similar: { id: string; similarity: number; metadata?: Record<string, unknown> }[] = [],
+  existingReinforcementCount = 1
 ): any {
   return {
     rpc: async (name: string, _args: unknown) => {
@@ -41,9 +50,13 @@ function makeFakeClient(
     from: (table: string) => {
       assert.equal(table, 'memory_items');
       return {
-        insert: async (payload: Record<string, unknown>) => {
+        insert: (payload: Record<string, unknown>) => {
           probe.inserted.push(payload);
-          return { error: null };
+          return {
+            select: (_cols: string) => ({
+              maybeSingle: async () => ({ data: { id: 'new-row-id' }, error: null }),
+            }),
+          };
         },
         update: (payload: Record<string, unknown>) => ({
           eq: async (col: string, id: string) => {
@@ -51,6 +64,14 @@ function makeFakeClient(
             probe.updated.push({ payload, id });
             return { error: null };
           },
+        }),
+        select: (_cols: string) => ({
+          eq: (_col: string, _id: string) => ({
+            maybeSingle: async () => ({
+              data: { reinforcement_count: existingReinforcementCount },
+              error: null,
+            }),
+          }),
         }),
       };
     },

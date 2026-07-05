@@ -1,3 +1,13 @@
+## [0.8.0] - 2026-07-05
+
+### Added
+- **Capture gates + reinforcement-as-signal** (Sprint 79 T1). Migration `028_capture_gates.sql`: `reinforcement_count`/`sprint_ref`/`rule_ref` on `memory_items` (all `ADD COLUMN IF NOT EXISTS`; the generated `content_hash` column is added replay-safe so a clean `001→028` chain no longer fails), partial-unique-active index on `content_hash`, a reversible dup-collapse backfill (keep-oldest, sum `reinforcement_count`, supersede — never DELETE), and an `ingest_capture(jsonb)` RPC (both ON CONFLICT paths, five-gate). Dedup rewrite in `remember.ts`: the 0.88–0.95 band now **merges, not clobbers** — increments `reinforcement_count`, shallow-merges metadata, appends `metadata.reinforcements[]` (cap 10), keep-canonical unless `refresh:true`, cross-project second pass for kitchen rows, rejected-restatement hash+length audit. MCP `memory_remember` inputSchema + webhook parity expanded with `metadata`/`source_agent`/`sprint_ref`/`rule_ref`/`supersedes`/`force`; `rule_ref` auto-creates an `amends_rule` link edge. New `src/granularity.ts` regex classifier + `recall.ts` TYPE_RANK downweight for `granularity='recipe'`. `mnestra_capture_health` view (`security_invoker=true`, explicit revoke/grant hygiene).
+- Migration `029_doctrine_recall_boost.sql`: `memory_hybrid_search` gains a `doctrine` ×1.5 type-weight + a 365-day decay tier (byte-identical signature/returns to migration 023; only the two `doctrine` arms added; overload-drop guard + search_path + grants retained).
+- `relationship_type` CHECK + `RELATIONSHIP_TYPES` + MCP enum extended with `elevated_to` (doctrine flow-back edges) and `amends_rule` (028 is the single writer of that constraint).
+
+### Notes
+- Sprint 79 T1, FINAL-VERDICT GREEN on code/tests (Codex auditor); live-landedness pending ORCH migration apply. `npm test` **257/257**, `tsc` clean, gitleaks 0. Migrations 028/029 **NOT yet applied to any prod DB** — operator step (hard-failing five-gate receipts verify at apply time). Companions: `@jhizzard/rumen@0.7.0` (doctrine-scan) + `@jhizzard/termdeck@1.13.0` (materialize/ratify).
+
 ## [0.7.0] - 2026-06-13
 
 ### Added

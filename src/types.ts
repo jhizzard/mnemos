@@ -8,7 +8,8 @@ export type SourceType =
   | 'preference'
   | 'bug_fix'
   | 'architecture'
-  | 'code_context';
+  | 'code_context'
+  | 'doctrine';
 
 export type Category =
   | 'technical'
@@ -29,7 +30,9 @@ export type RelationshipType =
   | 'caused_by'
   | 'blocks'
   | 'inspired_by'
-  | 'cross_project_link';
+  | 'cross_project_link'
+  | 'elevated_to'
+  | 'amends_rule';
 
 export const RELATIONSHIP_TYPES: RelationshipType[] = [
   'supersedes',
@@ -40,6 +43,8 @@ export const RELATIONSHIP_TYPES: RelationshipType[] = [
   'blocks',
   'inspired_by',
   'cross_project_link',
+  'elevated_to',
+  'amends_rule',
 ];
 
 export interface MemoryItem {
@@ -91,6 +96,47 @@ export interface RememberInput {
    * (unknown provenance), the pre-Sprint-74 behavior.
    */
   source_agent?: string | null;
+  /**
+   * Sprint 79 T1 (capture gates): which sprint's work produced/reinforced
+   * this memory. Threaded straight to `memory_items.sprint_ref` (migration
+   * 028) — loose `text`, no CHECK, same fail-soft-provenance philosophy as
+   * source_agent. On a dedup-merge hit, a supplied value updates the row's
+   * sprint_ref (latest reinforcer wins); omitted preserves the existing one.
+   */
+  sprint_ref?: string | null;
+  /**
+   * Sprint 79 T1: the memory_id of a "rule" memory this write amends.
+   * Threaded to `memory_items.rule_ref` (migration 028) AND auto-creates an
+   * `amends_rule` `memory_link` edge from the new/updated row to it (best-
+   * effort — a link failure never blocks the capture). Omit for a write
+   * that doesn't amend an existing rule.
+   */
+  rule_ref?: string | null;
+  /**
+   * Sprint 79 T1: UUID of an existing memory this write directly replaces.
+   * When set, after the new row lands, the referenced row is marked
+   * `superseded_by` = new id, `is_active = false` (mirroring
+   * consolidate.ts's supersede convention) AND a `supersedes` memory_link
+   * edge is recorded for graph traversal. Best-effort — a failure here
+   * never blocks the capture of the new row itself.
+   */
+  supersedes?: string | null;
+  /**
+   * Sprint 79 T1: bypass the near-duplicate lookup entirely and always
+   * insert a fresh row, even if an embedding-similar row already exists.
+   * Rare escape hatch — default false (the normal dedup path runs).
+   */
+  force?: boolean;
+  /**
+   * Sprint 79 T1: only meaningful when a near-duplicate IS found (the
+   * 0.88-0.95 band). Default behavior keeps the OLD canonical content and
+   * only merges metadata + bumps reinforcement_count (auto-captured
+   * restatements are systematically more verbose than the original —
+   * "longer wins" would let noise overwrite signal). `refresh: true` lets
+   * the NEW content win instead, for a deliberate correction/expansion.
+   * Ignored when `force` is set (force never reaches the merge branch).
+   */
+  refresh?: boolean;
 }
 
 export type RememberResult = 'inserted' | 'updated' | 'skipped';

@@ -28,6 +28,18 @@ const VALID_CATEGORIES = new Set<Category>([
 
 const VALID_IMPORTANCE = new Set<Importance>(['critical', 'important', 'minor']);
 
+const IMPORTANCE_RANK: Record<Importance, number> = { minor: 1, important: 2, critical: 3 };
+
+/**
+ * Sprint 79 T1 (capture gates, PLANNING §5): a floor on which extracted
+ * facts get stored. 'minor' is the lowest rank, so every valid Importance
+ * clears it — this sprint the floor is a deliberate no-op. It exists now so
+ * a future sprint can raise it (e.g. to 'important') without an API change:
+ * droppedCount is already surfaced on SummarizeResult, so raising the floor
+ * later is a one-line constant change with pre-existing observability.
+ */
+const IMPORTANCE_FLOOR: Importance = 'minor';
+
 async function extractFacts(text: string): Promise<ExtractedFact[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY ?? '';
   if (!apiKey) {
@@ -114,6 +126,8 @@ export interface SummarizeResult {
   inserted: number;
   updated: number;
   skipped: number;
+  /** Sprint 79 T1: facts extracted but rejected by IMPORTANCE_FLOOR before ever reaching memoryRemember. Always 0 while the floor is 'minor' (no-op this sprint). */
+  droppedCount: number;
   facts: ExtractedFact[];
 }
 
@@ -126,8 +140,14 @@ export async function memorySummarizeSession(
   let inserted = 0;
   let updated = 0;
   let skipped = 0;
+  let droppedCount = 0;
+  const floorRank = IMPORTANCE_RANK[IMPORTANCE_FLOOR];
 
   for (const fact of facts) {
+    if (IMPORTANCE_RANK[fact.importance] < floorRank) {
+      droppedCount++;
+      continue;
+    }
     try {
       const result: RememberResult = await memoryRemember({
         content: fact.content,
@@ -145,5 +165,5 @@ export async function memorySummarizeSession(
     }
   }
 
-  return { total: facts.length, inserted, updated, skipped, facts };
+  return { total: facts.length, inserted, updated, skipped, droppedCount, facts };
 }
