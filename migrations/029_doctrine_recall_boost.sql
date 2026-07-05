@@ -261,45 +261,51 @@ end $$;
 -- receipt that cannot fail is not a receipt).
 do $$
 declare
-  v_sig  text;
+  v_oid  oid;
   v_anon boolean;
   v_auth boolean;
   v_pub  boolean;
   v_svc  boolean;
   v_cfg  text;
 begin
-  select format('public.%I(%s)', p.proname, pg_get_function_identity_arguments(p.oid))
-    into v_sig
+  -- Use the function OID with has_function_privilege, NOT a reconstructed text
+  -- signature: pg_get_function_identity_arguments returns arg NAMES on some
+  -- Postgres builds (observed live on Supabase — "query_text text, ..."), and
+  -- has_function_privilege's text form rejects that ("invalid type name
+  -- 'query_text text'"). The OID form is portable across builds. (REVOKE/GRANT
+  -- in the re-pin block above tolerate named args, so only this receipt needed
+  -- the change.)
+  select p.oid into v_oid
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public'
      and p.proname = 'memory_hybrid_search'
    limit 1;
 
-  if v_sig is null then
+  if v_oid is null then
     raise exception '[029] memory_hybrid_search not found after CREATE OR REPLACE';
   end if;
 
-  v_anon := has_function_privilege('anon',          v_sig, 'EXECUTE');
-  v_auth := has_function_privilege('authenticated', v_sig, 'EXECUTE');
-  v_pub  := has_function_privilege('public',        v_sig, 'EXECUTE');
-  v_svc  := has_function_privilege('service_role',  v_sig, 'EXECUTE');
+  v_anon := has_function_privilege('anon',          v_oid, 'EXECUTE');
+  v_auth := has_function_privilege('authenticated', v_oid, 'EXECUTE');
+  v_pub  := has_function_privilege('public',        v_oid, 'EXECUTE');
+  v_svc  := has_function_privilege('service_role',  v_oid, 'EXECUTE');
 
   select array_to_string(p.proconfig, '; ') into v_cfg
-    from pg_proc p where p.oid = v_sig::regprocedure;
+    from pg_proc p where p.oid = v_oid;
 
-  raise notice '[029] % EXECUTE — anon:%, authenticated:%, public:% (expect f f f); service_role:% (expect t); proconfig: %',
-    v_sig, v_anon, v_auth, v_pub, v_svc, coalesce(v_cfg, '<none>');
+  raise notice '[029] memory_hybrid_search EXECUTE — anon:%, authenticated:%, public:% (expect f f f); service_role:% (expect t); proconfig: %',
+    v_anon, v_auth, v_pub, v_svc, coalesce(v_cfg, '<none>');
 
   if v_anon or v_auth or v_pub then
-    raise exception '[029] GATE 3 VIOLATION: % is executable by anon/authenticated/public (anon=%, authenticated=%, public=%)',
-      v_sig, v_anon, v_auth, v_pub;
+    raise exception '[029] GATE 3 VIOLATION: memory_hybrid_search executable by anon/authenticated/public (anon=%, authenticated=%, public=%)',
+      v_anon, v_auth, v_pub;
   end if;
   if not v_svc then
-    raise exception '[029] GATE 3 VIOLATION: service_role lost EXECUTE on %', v_sig;
+    raise exception '[029] GATE 3 VIOLATION: service_role lost EXECUTE on memory_hybrid_search';
   end if;
   if v_cfg is null or v_cfg not like '%search_path=public, extensions, pg_catalog%' then
-    raise exception '[029] GATE 4 VIOLATION: % search_path not pinned (proconfig: %)', v_sig, coalesce(v_cfg, '<none>');
+    raise exception '[029] GATE 4 VIOLATION: memory_hybrid_search search_path not pinned (proconfig: %)', coalesce(v_cfg, '<none>');
   end if;
 
   raise notice '[029] receipt: memory_hybrid_search replaced with doctrine x1.5 type-weight + 365d decay tier; hygiene re-verified.';

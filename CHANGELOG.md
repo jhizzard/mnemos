@@ -1,3 +1,10 @@
+## [0.8.1] - 2026-07-05
+
+### Fixed (post-0.8.0 hotfix — 028/029 broke fresh installs + CI)
+- **Migration 028 aborted on every fresh install / CI replay** with `[028] RLS REGRESSION`. Its receipt hard-asserted RLS enabled on `memory_items`/`memory_relationships`, but RLS on those tables was enabled **out-of-band** on the daily-driver and is **never enabled by the migration chain** — so a fresh DB has it OFF and 028 aborted. 028 now **enables RLS idempotently** on both tables (new §6b) before the check — fixing the abort AND closing a real hole (fresh Mnestra installs shipped with RLS OFF on the memory tables; `service_role` bypasses RLS, anon/authenticated are now correctly denied). Also **defers the `pre_compact_snapshot` rolling-unique index to Sprint 80** (migration 030): it must ship with the pre-compact hook's `ingest_capture` adoption — creating it earlier breaks the append-per-compaction hook's next insert and can't apply on a store with accumulated snapshots.
+- **Migration 029 receipt failed on Supabase's Postgres.** The five-gate receipt built a signature via `pg_get_function_identity_arguments` (which returns arg **names** on some Postgres builds) and passed it to `has_function_privilege`'s text form → `invalid type name "query_text text"`. Now uses the function **OID**. The doctrine ×1.5 type-weight + 365-day decay boost is unchanged.
+- No functional change to 028's columns/RPC/constraints or 029's ranking; both verified re-applying idempotently to the live store and via a psql-path client.
+
 ## [0.8.0] - 2026-07-05
 
 ### Added

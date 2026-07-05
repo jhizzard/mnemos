@@ -209,9 +209,14 @@ create unique index if not exists memory_items_content_hash_active_uidx
   on public.memory_items (content_hash)
   where (is_active = true);
 
-create unique index if not exists memory_items_precompact_session_uidx
-  on public.memory_items (source_session_id)
-  where (source_type = 'pre_compact_snapshot' and is_active = true);
+-- DEFERRED to Sprint 80 (migration 030): the pre_compact_snapshot rolling-
+-- unique index ships together with the hook's ingest_capture adoption. Creating
+-- it now would (a) fail on a live store with accumulated snapshots and (b) break
+-- the current append-per-compaction hook's next insert. ingest_capture's rolling
+-- ON CONFLICT path is created below regardless (its arbiter index lands in 030).
+-- create unique index if not exists memory_items_precompact_session_uidx
+--   on public.memory_items (source_session_id)
+--   where (source_type = 'pre_compact_snapshot' and is_active = true);
 
 -- ====================================================================
 -- 4. memory_relationships.relationship_type — extend to 10 values.
@@ -418,6 +423,20 @@ revoke all on public.mnestra_capture_health from public, anon, authenticated;
 grant  select on public.mnestra_capture_health to service_role;
 
 -- ====================================================================
+-- 6b. Ensure RLS ENABLED on memory_items + memory_relationships (idempotent).
+--    RLS on these tables was enabled OUT-OF-BAND on the live daily-driver; the
+--    migration chain (001->027) never enabled it, so a fresh install / CI
+--    replay has RLS OFF here and the receipt's RLS post-condition below would
+--    (wrongly) abort. Enabling it here (a) makes 028 apply cleanly on a fresh
+--    DB and (b) is the correct hygiene posture — memory tables must not be
+--    anon/authenticated-accessible (service_role bypasses RLS; the Mnestra
+--    server writes as service_role). ENABLE on an already-RLS table is a no-op.
+-- ====================================================================
+
+alter table public.memory_items         enable row level security;
+alter table public.memory_relationships  enable row level security;
+
+-- ====================================================================
 -- 7. Apply-time receipt — HARD-FAILING. Any gate violation raises, rolling
 --    back the whole migration transaction. Same idiom as migrations 026/027.
 -- ====================================================================
@@ -502,10 +521,10 @@ begin
 
   -- Both partial unique indexes exist.
   select exists (select 1 from pg_indexes where schemaname='public' and indexname='memory_items_content_hash_active_uidx') into v_idx_content_hash;
-  select exists (select 1 from pg_indexes where schemaname='public' and indexname='memory_items_precompact_session_uidx') into v_idx_precompact;
-  raise notice '[028] partial unique indexes — content_hash_active:%, precompact_session:% (expect t t)', v_idx_content_hash, v_idx_precompact;
-  if not (v_idx_content_hash and v_idx_precompact) then
-    raise exception '[028] INDEX MISSING: content_hash_active_uidx=%, precompact_session_uidx=%', v_idx_content_hash, v_idx_precompact;
+  v_idx_precompact := true; -- precompact rolling-unique index DEFERRED to Sprint 80 (ships with hook ingest_capture adoption)
+  raise notice '[028] content_hash_active index:% (precompact index deferred to S80)', v_idx_content_hash;
+  if not v_idx_content_hash then
+    raise exception '[028] INDEX MISSING: content_hash_active_uidx=%', v_idx_content_hash;
   end if;
 
   -- relationship_type CHECK carries both new values (+ base 8 preserved).
@@ -581,9 +600,10 @@ begin
     raise exception '[028] VIEW GATE VIOLATION: service_role lost SELECT on mnestra_capture_health';
   end if;
 
-  -- Regression guard: memory_items / memory_relationships RLS still enabled
-  -- (this migration doesn't touch it, but a silent regression would be
-  -- catastrophic and this check is nearly free).
+  -- Post-condition: memory_items / memory_relationships RLS enabled. §6b above
+  -- enables it idempotently — on the live store it was already on (out-of-band);
+  -- on a fresh install / CI replay §6b is what turns it on. This check now
+  -- always passes; it stays as a cheap guard against a future reordering.
   select relrowsecurity into v_items_rls from pg_class where relname = 'memory_items' and relnamespace = 'public'::regnamespace;
   select relrowsecurity into v_rel_rls from pg_class where relname = 'memory_relationships' and relnamespace = 'public'::regnamespace;
   raise notice '[028] pre-existing RLS unchanged — memory_items:%, memory_relationships:% (expect t t)', v_items_rls, v_rel_rls;
