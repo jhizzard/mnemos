@@ -123,7 +123,12 @@ export async function memoryIndex(
   // anchor isn't double-counted as a phantom 'index' hit.
   if (input.log_surface !== null) {
     logRecallHits(
-      rows.map((m, i) => ({ memory_id: m.id, score: m.score, rank: i + 1 })),
+      rows.map((m, i) => ({
+        memory_id: m.id,
+        score: m.score,
+        rank: i + 1,
+        source_type: m.source_type,
+      })),
       { surface: input.log_surface ?? 'index', query }
     );
   }
@@ -208,7 +213,11 @@ export async function memoryTimeline(
   // the anchor query (or the around_id when query-less). No per-row score on
   // the window query, so rank only.
   logRecallHits(
-    windowRows.map((m, i) => ({ memory_id: m.id, rank: i + 1 })),
+    windowRows.map((m, i) => ({
+      memory_id: m.id,
+      rank: i + 1,
+      source_type: m.source_type,
+    })),
     { surface: 'timeline', query: input.query ?? input.around_id ?? '' }
   );
 

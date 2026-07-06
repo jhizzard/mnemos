@@ -1,3 +1,20 @@
+## [0.9.0] - 2026-07-05
+
+### Added — recall→reinjection provenance + recall-usage boost (Sprint 81 T1)
+- **Migration `031_recall_provenance.sql`**: extends Sprint-78's `memory_recall_log` (does NOT fork it) with nullable `source_type` (per returned memory), `token_budget` (per recall call), and `recall_group_id` (one UUID per recall — groups a recall's K hit-rows into a single "reinjection event") + a `recall_group_id` index. `log_recall_hits(jsonb)` recordset/INSERT extended to carry the three fields (batched denorm `recall_count`/`last_recalled_at` bump preserved verbatim); OID-form five-gate receipt.
+- **G2 trusted-producer provenance**: `recall_log.ts` resolves `source_session_id`/`source_agent` from explicit caller context (webhook wins) else from `process.env.MNESTRA_SESSION_ID`/`MNESTRA_SOURCE_AGENT` (set by TermDeck at panel spawn), applied at the single `logRecallHits()` choke point so ALL five recall surfaces (recall/search/index/timeline/graph) inherit it. This is what makes "which panel pulled which memory" non-NULL and unspoofable on the primary MCP-stdio path.
+- **Migration `032_recall_boost.sql`**: `memory_items.recall_boost numeric NOT NULL DEFAULT 1.0` + `set_recall_boost(jsonb)` service-role RPC (batched, clamp `[1.0, 2.0]`, doctrine-clean) + a bounded multiplicative factor in `memory_hybrid_search` that is a **strict no-op at 1.0** (ranking unchanged for every row until Rumen's reinforce loop populates the column; pruning moratorium honored).
+
+### Changed
+- **Migration `030_precompact_rolling.sql`** (the Sprint-80-deferred coupled unit): keep-NEWEST-per-session reversible collapse of active `pre_compact_snapshot` dups + `ingest_capture`'s pre_compact branch redefined **arbiter-free** (`pg_advisory_xact_lock` + select-active→update-in-place-else-insert, NO `ON CONFLICT` on the still-deferred index) so the bundled pre-compact hook can adopt `ingest_capture` without a 42P10; content_hash branch byte-identical to 028. The precompact rolling-unique index stays commented — ORCH creates it LAST, after the live hook is refreshed to `ingest_capture`.
+- **Receipt-idiom OID sweep**: the three text-signature `has_function_privilege(role, '<sig>', …)` receipt blocks in `026`/`027`/`028` rewritten to the portable OID form (029's pattern; dodges the Supabase named-args `invalid type name` trap on fresh-install/CI replay). Receipt-only — zero DDL/backfill change.
+
+### Fixed
+- Stale `tests/migration-028-hygiene.test.ts` assertion (required the deferred precompact index inside 028) now expects it DEFERRED to 030 — the sole pre-Sprint-81 engram test red.
+
+### Notes
+- Sprint 81 T1, FINAL-VERDICT green on code/tests (T7 Codex auditor); live-landedness applied by ORCH at close-out. `npm test` **292/292**, `tsc` clean, gitleaks 0. Migrations 030/031/032 apply after 023–029; the 026/027/028 receipt edits matter only on fresh-install/CI replay (idempotent to re-apply). Companions: `@jhizzard/rumen@0.8.0` + `@jhizzard/termdeck@1.14.0` + `@jhizzard/termdeck-stack@1.12.0`.
+
 ## [0.8.1] - 2026-07-05
 
 ### Fixed (post-0.8.0 hotfix — 028/029 broke fresh installs + CI)

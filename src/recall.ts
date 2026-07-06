@@ -261,12 +261,20 @@ export async function memoryRecall(
   // logRecallHits. `log_surface` is 'webhook' when the call arrived over the
   // wire, else the native 'recall'.
   logRecallHits(
-    kept.map((m, i) => ({ memory_id: m.id, score: m.score, rank: i + 1 })),
+    kept.map((m, i) => ({
+      memory_id: m.id,
+      score: m.score,
+      rank: i + 1,
+      source_type: m.source_type,
+    })),
     {
       surface: input.log_surface ?? 'recall',
       query,
       sourceSessionId: input.log_session_id ?? null,
       sourceAgent: input.log_source_agent ?? null,
+      // Sprint 81: the per-call token budget — same on every hit row of this
+      // recall's recall_group_id (see recall_log.ts).
+      tokenBudget: budget,
     }
   );
 

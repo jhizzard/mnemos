@@ -30,7 +30,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { getSupabase } from './db.js';
 import type { RecallSurface } from './types.js';
@@ -39,6 +39,13 @@ export interface RecallLogHit {
   memory_id: string;
   score?: number | null;
   rank?: number | null;
+  /**
+   * Sprint 81 (migration 031): the recalled memory's source_type (per hit), so
+   * the proof surface can show a recall's source_type mix from the log alone.
+   * Optional/nullable — graph recall can't supply it (the memory_recall_graph
+   * RPC doesn't return source_type), so it's omitted there → stored NULL.
+   */
+  source_type?: string | null;
 }
 
 export interface RecallLogContext {
@@ -46,6 +53,13 @@ export interface RecallLogContext {
   query: string;
   sourceSessionId?: string | null;
   sourceAgent?: string | null;
+  /**
+   * Sprint 81 (migration 031): the recall call's token budget (per call; the
+   * same value on every one of this call's hit rows). Null for surfaces
+   * without a token budget (search/index/timeline/graph). Powers the
+   * cold-vs-warm "token-in" delta.
+   */
+  tokenBudget?: number | null;
 }
 
 export interface RecallLogDeps {
@@ -175,6 +189,29 @@ function resolveClient(deps: RecallLogDeps): SupabaseClient | null {
 }
 
 /**
+ * Sprint 81 (R2 — trusted-producer provenance): read a session/agent identity
+ * from the environment. This is the UN-spoofable half of the G2 fix — the
+ * webhook can thread caller provenance through its request args, but the
+ * MCP-stdio recall tools expose no provenance args and boot prompts call plain
+ * `memory_recall(project, query)`, so a self-reported arg would be blank or
+ * forgeable. Instead, TermDeck exports MNESTRA_SESSION_ID (the panel's session
+ * id) and MNESTRA_SOURCE_AGENT (claude/codex/…) into each spawned agent's env
+ * at panel spawn; a panel cannot set another panel's id. Reading it HERE — the
+ * single recall-log choke point — makes every recall surface
+ * (recall/search/index/timeline/graph) carry non-null provenance, not just the
+ * handlers a caller happened to wire. Per-call (not module-load) so it tracks
+ * the live env and stays trivially testable; a `${VAR}` a launcher failed to
+ * expand is treated as unset.
+ */
+function trustedEnv(name: string): string | null {
+  const v = process.env[name];
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (t.length === 0 || (t.startsWith('${') && t.endsWith('}'))) return null;
+  return t;
+}
+
+/**
  * Fire-and-forget: log the K returned hits for one recall. Builds the batched
  * payload and dispatches the `log_recall_hits(jsonb)` RPC (one statement-level
  * insert + one denorm-counter UPDATE server-side). Returns void synchronously;
@@ -190,6 +227,17 @@ export function logRecallHits(
 
     const queryHash = hashQuery(ctx.query);
     const queryPreview = redactQueryPreview(ctx.query);
+    // Sprint 81: one uuid per recall CALL, shared across this call's K hit
+    // rows — the identity of a single "reinjection event". One logRecallHits
+    // call == one recall == one group, so generating it here (not per-hit) is
+    // exactly the right granularity.
+    const recallGroupId = randomUUID();
+    // Sprint 81 (R2): explicit ctx provenance (the webhook threads it from
+    // request args) WINS; otherwise fall back to the trusted-producer env vars
+    // TermDeck sets at panel spawn. Resolved once per call (per-call, not
+    // per-hit — same identity on every row of this recall_group_id).
+    const sessionId = ctx.sourceSessionId ?? trustedEnv('MNESTRA_SESSION_ID');
+    const sourceAgent = ctx.sourceAgent ?? trustedEnv('MNESTRA_SOURCE_AGENT');
 
     const payload = hits
       .map((h, i) => ({
@@ -199,8 +247,11 @@ export function logRecallHits(
         score: h?.score ?? null,
         rank: h?.rank ?? i + 1,
         surface: ctx.surface,
-        source_session_id: ctx.sourceSessionId ?? null,
-        source_agent: ctx.sourceAgent ?? null,
+        source_session_id: sessionId,
+        source_agent: sourceAgent,
+        source_type: h?.source_type ?? null,
+        token_budget: ctx.tokenBudget ?? null,
+        recall_group_id: recallGroupId,
       }))
       .filter(
         (p) => typeof p.memory_id === 'string' && UUID_RE.test(p.memory_id as string)

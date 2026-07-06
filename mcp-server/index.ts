@@ -136,6 +136,10 @@ Usage:
 Environment:
   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY   required for all operations
   OPENAI_API_KEY                             required for embeddings (remember/recall/index/search)
+  MNESTRA_SESSION_ID / MNESTRA_SOURCE_AGENT  optional; identity of the launching session/agent (a
+                                             TermDeck panel exports these at spawn), stamped onto
+                                             recall-hit telemetry so "which panel pulled which memory"
+                                             is answerable across every recall surface. Unset = NULL.
   MNESTRA_WEBHOOK_PORT                        HTTP port for \`mnestra serve\` (default 37778)
   DATABASE_URL                                optional; only inspected by \`mnestra doctor\` to flag
                                               IPv6-only endpoints (db.<project-ref>.supabase.co) that

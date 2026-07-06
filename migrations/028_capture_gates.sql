@@ -466,6 +466,7 @@ declare
   v_items_rls         boolean;
   v_rel_rls           boolean;
   v_sig text := 'public.ingest_capture(jsonb)';
+  v_oid oid;
 begin
   -- New columns present; 027's denorm columns untouched (collision guard).
   select exists (select 1 from information_schema.columns
@@ -554,13 +555,16 @@ begin
     raise exception '[028] SOURCE_TYPE CHECK VIOLATION: expected the 10 pre-existing values + doctrine, found: %', coalesce(v_constraint_def, '<null>');
   end if;
 
-  -- ingest_capture: EXECUTE privileges + pinned search_path.
-  v_anon := has_function_privilege('anon',          v_sig, 'EXECUTE');
-  v_auth := has_function_privilege('authenticated', v_sig, 'EXECUTE');
-  v_pub  := has_function_privilege('public',        v_sig, 'EXECUTE');
-  v_svc  := has_function_privilege('service_role',  v_sig, 'EXECUTE');
+  -- ingest_capture: EXECUTE privileges + pinned search_path. Sprint 81
+  -- receipt-OID sweep: resolve the OID from the literal signature and pass it to
+  -- has_function_privilege (portable form; migration 029 reference). Receipt-only.
+  v_oid := v_sig::regprocedure;
+  v_anon := has_function_privilege('anon',          v_oid, 'EXECUTE');
+  v_auth := has_function_privilege('authenticated', v_oid, 'EXECUTE');
+  v_pub  := has_function_privilege('public',        v_oid, 'EXECUTE');
+  v_svc  := has_function_privilege('service_role',  v_oid, 'EXECUTE');
   select array_to_string(p.proconfig, '; ') into v_cfg
-    from pg_proc p where p.oid = v_sig::regprocedure;
+    from pg_proc p where p.oid = v_oid;
   raise notice '[028] % EXECUTE — anon:%, authenticated:%, public:% (expect f f f); service_role:% (expect t); proconfig: %',
     v_sig, v_anon, v_auth, v_pub, v_svc, coalesce(v_cfg, '<none>');
   if v_anon or v_auth or v_pub then

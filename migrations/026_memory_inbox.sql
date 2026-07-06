@@ -298,6 +298,7 @@ do $$
 declare
   v_rls          boolean;
   v_policy_count int;
+  v_oid          oid;
   v_anon_exec    boolean;
   v_auth_exec    boolean;
   v_public_exec  boolean;
@@ -313,15 +314,28 @@ begin
     from pg_policies
    where schemaname = 'public' and tablename = 'memory_inbox';
 
-  v_anon_exec    := has_function_privilege('anon',          'public.memory_propose(text,text,text,jsonb)', 'EXECUTE');
-  v_auth_exec    := has_function_privilege('authenticated', 'public.memory_propose(text,text,text,jsonb)', 'EXECUTE');
-  v_public_exec  := has_function_privilege('public',        'public.memory_propose(text,text,text,jsonb)', 'EXECUTE');
-  v_service_exec := has_function_privilege('service_role',  'public.memory_propose(text,text,text,jsonb)', 'EXECUTE');
+  -- Sprint 81 receipt-OID sweep: resolve the function OID by proname and pass
+  -- it to has_function_privilege, rather than a reconstructed text signature —
+  -- the portable form (pg_get_function_identity_arguments returns arg NAMES on
+  -- Supabase's Postgres, which the text form rejects; migration 029 is the
+  -- reference). Receipt-only — no DDL/backfill change.
+  select p.oid into v_oid
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'memory_propose'
+   limit 1;
+  if v_oid is null then
+    raise exception '[026] memory_propose not found';
+  end if;
+
+  v_anon_exec    := has_function_privilege('anon',          v_oid, 'EXECUTE');
+  v_auth_exec    := has_function_privilege('authenticated', v_oid, 'EXECUTE');
+  v_public_exec  := has_function_privilege('public',        v_oid, 'EXECUTE');
+  v_service_exec := has_function_privilege('service_role',  v_oid, 'EXECUTE');
 
   select array_to_string(p.proconfig, '; ') into v_proconfig
     from pg_proc p
-    join pg_namespace n on n.oid = p.pronamespace
-   where n.nspname = 'public' and p.proname = 'memory_propose';
+   where p.oid = v_oid;
 
   raise notice '[026] memory_inbox RLS enabled: % (expect t)', v_rls;
   raise notice '[026] memory_inbox policy count: % (expect 0)', v_policy_count;

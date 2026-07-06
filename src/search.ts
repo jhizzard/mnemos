@@ -45,7 +45,12 @@ export async function memorySearch(
   // Sprint 78 T3 — fire-and-forget recall telemetry on the returned set.
   // Never awaited; failures swallowed. surface 'webhook' over the wire.
   logRecallHits(
-    hits.map((m, i) => ({ memory_id: m.id, score: m.score, rank: i + 1 })),
+    hits.map((m, i) => ({
+      memory_id: m.id,
+      score: m.score,
+      rank: i + 1,
+      source_type: m.source_type,
+    })),
     {
       surface: input.log_surface ?? 'search',
       query,

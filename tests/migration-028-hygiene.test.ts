@@ -73,17 +73,37 @@ test('backfill grouping is data-driven (a live GROUP BY), not a hardcoded row co
   assert.ok(!/=\s*56\b/.test(effective), 'no hardcoded group-count literal in executable SQL');
 });
 
-test('two partial unique indexes exist with the exact ON CONFLICT arbiter predicates', () => {
+test('028 ships the content_hash index ACTIVE; the precompact index is DEFERRED to 030', () => {
+  // content_hash arbiter is created (its ON CONFLICT idempotency path uses it).
   assert.match(
     lower,
     /create unique index if not exists memory_items_content_hash_active_uidx\s*\n\s*on public\.memory_items \(content_hash\)\s*\n\s*where \(is_active = true\)/
   );
+  // Sprint 81 R4: the pre_compact_snapshot rolling-unique index is DEFERRED
+  // (commented) in 028 — it ships with migration 030 and ORCH creates it LAST.
+  // It must NOT be active SQL here (the comment-stripped `effective` SQL has no
+  // CREATE for it), and 028 must document the deferral to 030.
+  assert.ok(
+    !/create unique index if not exists memory_items_precompact_session_uidx/i.test(effective),
+    'the precompact index must remain DEFERRED (commented) in 028 — 030 owns it'
+  );
   assert.match(
     lower,
-    /create unique index if not exists memory_items_precompact_session_uidx\s*\n\s*on public\.memory_items \(source_session_id\)\s*\n\s*where \(source_type = 'pre_compact_snapshot' and is_active = true\)/
+    /deferred to sprint 80 \(migration 030\)/,
+    '028 must document the precompact-index deferral to migration 030'
   );
-  // The RPC's two ON CONFLICT clauses must use the IDENTICAL predicates.
+});
+
+test('028 ingest_capture uses the content_hash ON CONFLICT arbiter', () => {
+  // The content_hash idempotency path's arbiter (content_hash_active index)
+  // exists, so this ON CONFLICT is valid as shipped.
   assert.match(lower, /on conflict \(content_hash\) where \(is_active = true\)/);
+  // NOTE: 028's pre_compact_snapshot branch ALSO uses
+  // `on conflict (source_session_id) …`, whose arbiter (the precompact index)
+  // is deferred — the latent "needs the deferred index" bug T7 flagged
+  // (17:04). Migration 030 CREATE OR REPLACEs ingest_capture to make that
+  // branch ARBITER-FREE (Sprint 81 R3); the arbiter-free assertion lives in
+  // the 030 hygiene test. This assertion documents 028's shipped state.
   assert.match(
     lower,
     /on conflict \(source_session_id\) where \(source_type = 'pre_compact_snapshot' and is_active = true\)/

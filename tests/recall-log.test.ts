@@ -96,6 +96,118 @@ test('logRecallHits carries surface + provenance into the payload', () => {
   assert.equal(row.source_agent, 'grok');
 });
 
+// ── Sprint 81 (migration 031): reinjection-event provenance ─────────────────
+
+test('logRecallHits carries per-hit source_type + per-call token_budget, shared recall_group_id', () => {
+  const { client, calls } = makeRpcSpy();
+  logRecallHits(
+    [
+      { memory_id: UUID1, source_type: 'decision' },
+      { memory_id: UUID2, source_type: 'fact' },
+    ],
+    { surface: 'recall', query: 'q', tokenBudget: 2000 },
+    { client }
+  );
+  const rows = calls[0]!.args.p_hits as any[];
+  // source_type is per-hit
+  assert.equal(rows[0].source_type, 'decision');
+  assert.equal(rows[1].source_type, 'fact');
+  // token_budget is per-call — same on every row
+  assert.equal(rows[0].token_budget, 2000);
+  assert.equal(rows[1].token_budget, 2000);
+  // recall_group_id groups the K rows of one recall into one reinjection event
+  assert.ok(rows[0].recall_group_id, 'a recall_group_id is stamped');
+  assert.equal(rows[0].recall_group_id, rows[1].recall_group_id, 'shared across the batch');
+  assert.match(
+    rows[0].recall_group_id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    'recall_group_id is a uuid'
+  );
+});
+
+test('logRecallHits defaults source_type/token_budget to null when the surface omits them', () => {
+  // graph recall can't supply source_type; index/timeline/search carry no
+  // token budget. The row must still be grouped (recall_group_id present).
+  const { client, calls } = makeRpcSpy();
+  logRecallHits([{ memory_id: UUID1 }], { surface: 'graph', query: 'q' }, { client });
+  const row = (calls[0]!.args.p_hits as any[])[0];
+  assert.equal(row.source_type, null);
+  assert.equal(row.token_budget, null);
+  assert.ok(row.recall_group_id, 'still part of a reinjection event');
+});
+
+test('each logRecallHits call gets a DISTINCT recall_group_id (one event per call)', () => {
+  const { client, calls } = makeRpcSpy();
+  logRecallHits([{ memory_id: UUID1 }], { surface: 'recall', query: 'q' }, { client });
+  logRecallHits([{ memory_id: UUID1 }], { surface: 'recall', query: 'q' }, { client });
+  const g1 = (calls[0]!.args.p_hits as any[])[0].recall_group_id;
+  const g2 = (calls[1]!.args.p_hits as any[])[0].recall_group_id;
+  assert.notEqual(g1, g2, 'two recalls are two distinct reinjection events');
+});
+
+// ── Sprint 81 R2: trusted-producer provenance (env fallback) ────────────────
+
+test('logRecallHits falls back to env MNESTRA_SESSION_ID / MNESTRA_SOURCE_AGENT when ctx omits them', () => {
+  // THE G2 acceptance test: with the trusted-producer env set (TermDeck sets it
+  // at panel spawn), a recall that passes NO explicit provenance still writes a
+  // row carrying non-null source_session_id / source_agent.
+  const hadS = process.env.MNESTRA_SESSION_ID;
+  const hadA = process.env.MNESTRA_SOURCE_AGENT;
+  process.env.MNESTRA_SESSION_ID = 'panel-abc-123';
+  process.env.MNESTRA_SOURCE_AGENT = 'claude';
+  try {
+    const { client, calls } = makeRpcSpy();
+    // surface 'recall' with no sourceSessionId/sourceAgent in ctx — the plain
+    // MCP-stdio path.
+    logRecallHits([{ memory_id: UUID1 }], { surface: 'recall', query: 'q' }, { client });
+    const row = (calls[0]!.args.p_hits as any[])[0];
+    assert.equal(row.source_session_id, 'panel-abc-123', 'env session id is the trusted-producer fallback');
+    assert.equal(row.source_agent, 'claude', 'env source agent is the trusted-producer fallback');
+  } finally {
+    if (hadS !== undefined) process.env.MNESTRA_SESSION_ID = hadS;
+    else delete process.env.MNESTRA_SESSION_ID;
+    if (hadA !== undefined) process.env.MNESTRA_SOURCE_AGENT = hadA;
+    else delete process.env.MNESTRA_SOURCE_AGENT;
+  }
+});
+
+test('explicit ctx provenance WINS over env (webhook request args take precedence)', () => {
+  const hadS = process.env.MNESTRA_SESSION_ID;
+  const hadA = process.env.MNESTRA_SOURCE_AGENT;
+  process.env.MNESTRA_SESSION_ID = 'env-session';
+  process.env.MNESTRA_SOURCE_AGENT = 'env-agent';
+  try {
+    const { client, calls } = makeRpcSpy();
+    logRecallHits(
+      [{ memory_id: UUID1 }],
+      { surface: 'webhook', query: 'q', sourceSessionId: 'explicit-session', sourceAgent: 'grok' },
+      { client }
+    );
+    const row = (calls[0]!.args.p_hits as any[])[0];
+    assert.equal(row.source_session_id, 'explicit-session', 'explicit ctx session wins over env');
+    assert.equal(row.source_agent, 'grok', 'explicit ctx agent wins over env');
+  } finally {
+    if (hadS !== undefined) process.env.MNESTRA_SESSION_ID = hadS;
+    else delete process.env.MNESTRA_SESSION_ID;
+    if (hadA !== undefined) process.env.MNESTRA_SOURCE_AGENT = hadA;
+    else delete process.env.MNESTRA_SOURCE_AGENT;
+  }
+});
+
+test('unexpanded ${VAR} env placeholder is treated as unset (no bogus provenance)', () => {
+  const hadS = process.env.MNESTRA_SESSION_ID;
+  process.env.MNESTRA_SESSION_ID = '${MNESTRA_SESSION_ID}';
+  try {
+    const { client, calls } = makeRpcSpy();
+    logRecallHits([{ memory_id: UUID1 }], { surface: 'recall', query: 'q' }, { client });
+    const row = (calls[0]!.args.p_hits as any[])[0];
+    assert.equal(row.source_session_id, null, 'a literal ${VAR} placeholder must not become the session id');
+  } finally {
+    if (hadS !== undefined) process.env.MNESTRA_SESSION_ID = hadS;
+    else delete process.env.MNESTRA_SESSION_ID;
+  }
+});
+
 test('logRecallHits NEVER throws when the rpc rejects (fire-and-forget)', async () => {
   const client = { rpc: () => Promise.reject(new Error('boom')) } as any;
   assert.doesNotThrow(() =>

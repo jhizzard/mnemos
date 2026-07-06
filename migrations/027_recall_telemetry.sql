@@ -412,6 +412,7 @@ declare
   v_has_count    boolean;
   v_has_last     boolean;
   v_sig          text;
+  v_oid          oid;
   v_anon         boolean;
   v_auth         boolean;
   v_pub          boolean;
@@ -460,14 +461,21 @@ begin
   end if;
 
   foreach v_sig in array fn_sigs loop
-    v_anon := has_function_privilege('anon',          v_sig, 'EXECUTE');
-    v_auth := has_function_privilege('authenticated', v_sig, 'EXECUTE');
-    v_pub  := has_function_privilege('public',        v_sig, 'EXECUTE');
-    v_svc  := has_function_privilege('service_role',  v_sig, 'EXECUTE');
+    -- Sprint 81 receipt-OID sweep: resolve the OID from the (literal, type-only)
+    -- signature and pass the OID to has_function_privilege — the portable form
+    -- (migration 029 reference; the text form rejects the name-carrying identity
+    -- args some Postgres builds return). Receipt-only; fn_sigs stays the
+    -- documented function list.
+    v_oid := v_sig::regprocedure;
+
+    v_anon := has_function_privilege('anon',          v_oid, 'EXECUTE');
+    v_auth := has_function_privilege('authenticated', v_oid, 'EXECUTE');
+    v_pub  := has_function_privilege('public',        v_oid, 'EXECUTE');
+    v_svc  := has_function_privilege('service_role',  v_oid, 'EXECUTE');
 
     select array_to_string(p.proconfig, '; ') into v_cfg
       from pg_proc p
-     where p.oid = v_sig::regprocedure;
+     where p.oid = v_oid;
 
     raise notice '[027] % EXECUTE — anon:%, authenticated:%, public:% (expect f f f); service_role:% (expect t); proconfig: %',
       v_sig, v_anon, v_auth, v_pub, v_svc, coalesce(v_cfg, '<none>');
