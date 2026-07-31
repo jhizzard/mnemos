@@ -39,7 +39,7 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v6
-      - name: Provision Supabase platform objects
+      - name: Provision Supabase platform objects + the NON-SUPERUSER apply role
         # Mnestra's migrations target a Supabase database. Supabase provides
         # the anon / authenticated / service_role roles and the Vault schema;
         # a vanilla pgvector/pgvector:pg16 container has neither. Migrations
@@ -75,7 +75,65 @@ jobs:
             secret     text,
             created_at timestamptz NOT NULL DEFAULT now()
           );
+
+          -- Sprint 83 T1. Install the extensions into an `extensions` schema,
+          -- as Supabase does, rather than letting migration 001 drop them into
+          -- `public`. 019/029/033/034 all pin `search_path = public, extensions,
+          -- pg_catalog` precisely because that is where they live in production;
+          -- with them in `public` those pins are satisfied by accident and the
+          -- schema-qualification behaviour is never exercised. 001's
+          -- `create extension if not exists` is then a no-op, as it is on prod.
+          CREATE SCHEMA IF NOT EXISTS extensions;
+          CREATE EXTENSION IF NOT EXISTS vector   SCHEMA extensions;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm  SCHEMA extensions;
+          CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA extensions;
+
+          -- Sprint 83 T1. Every migration below is applied by `app`, a
+          -- NON-SUPERUSER role, because Supabase's `postgres` is not a superuser
+          -- (usesuper = f) and applying as one hides a whole class of failure.
+          --
+          -- Concretely, this is the fence for the 2026-07-31 live incident:
+          -- `CREATE FUNCTION ... SET hnsw.ef_search` fails with "permission
+          -- denied to set parameter" for a non-superuser whenever pgvector's
+          -- library is not yet loaded in the backend (the GUC is a placeholder
+          -- until then, and Postgres will not let a non-superuser pin a
+          -- placeholder into proconfig). As superuser it silently succeeds.
+          -- Verified on BOTH pg16 and pg17 — the discriminator is the ROLE, not
+          -- the server version, so this needs no image bump.
+          --
+          -- The role gets exactly what Supabase's postgres has and no more:
+          -- ownership of `public`, CREATE on the database (migration 024 creates
+          -- the `private` schema), USAGE on extensions. Still NOSUPERUSER, so a
+          -- migration that quietly requires superuser now fails HERE instead of
+          -- in production.
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+              CREATE ROLE app LOGIN PASSWORD 'postgres' NOSUPERUSER CREATEROLE;
+            END IF;
+          END
+          $$;
+
+          GRANT CREATE, CONNECT, TEMPORARY ON DATABASE mnestra_test TO app;
+          ALTER SCHEMA public OWNER TO app;
+          GRANT ALL   ON SCHEMA public     TO app;
+          GRANT USAGE ON SCHEMA extensions TO app, anon, authenticated, service_role;
+          GRANT ALL   ON SCHEMA vault      TO app;
+          GRANT ALL   ON ALL TABLES IN SCHEMA vault TO app;
+          ALTER ROLE app SET search_path = public, extensions, pg_catalog;
           SQL
+
+      - name: Confirm the apply role is NOT a superuser
+        # A one-line guard so this fence cannot rot silently: if someone later
+        # grants app superuser, or the apply steps drift back to -U postgres,
+        # the masking returns and nothing else would notice.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U app -d mnestra_test -v ON_ERROR_STOP=1 -t -c \
+            "select case when usesuper then 'FAIL: apply role is a superuser; the hnsw.ef_search class is masked' else 'ok: non-superuser apply role' end from pg_user where usename = current_user" \
+            | tee /dev/stderr | grep -q '^ *ok:'
+
       - name: Apply migrations in order
         # Sprint 82 T1: split at 033 so the behavioral test can capture what
         # migration 032 actually does BEFORE 033 replaces it. The equivalence
@@ -103,17 +161,17 @@ jobs:
               n=$((10#$(basename "$file" | cut -d_ -f1)))
               if [ "$n" -ge "$1" ] && [ "$n" -le "$2" ]; then
                 echo "Applying $file"
-                psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 -f "$file"
+                psql -h localhost -U app -d mnestra_test -v ON_ERROR_STOP=1 -f "$file"
               fi
             done
           }
           apply_range 1 32
           echo "Seeding migration-033 fixtures + capturing pre-033 baseline"
-          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+          psql -h localhost -U app -d mnestra_test -v ON_ERROR_STOP=1 \
             -f tests/sql/033a_seed_and_baseline.sql
           apply_range 33 33
           echo "Seeding migration-034 pre-034 legacy edges (incl. an unknown relationship_type)"
-          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+          psql -h localhost -U app -d mnestra_test -v ON_ERROR_STOP=1 \
             -f tests/sql/034a_seed_legacy_edges.sql
           apply_range 34 999
 
@@ -124,7 +182,7 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+          psql -h localhost -U app -d mnestra_test -v ON_ERROR_STOP=1 \
             -f tests/sql/033b_verify.sql
 
       - name: Verify migration 034 graph layer, label producer, and hygiene gates
@@ -137,5 +195,5 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+          psql -h localhost -U app -d mnestra_test -v ON_ERROR_STOP=1 \
             -f tests/sql/034b_verify.sql

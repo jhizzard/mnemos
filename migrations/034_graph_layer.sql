@@ -443,6 +443,85 @@ alter table public.memory_items
 -- stays in lockstep by construction. The §10 receipt re-asserts both functions
 -- are still single-overload, so a future divergence fails the apply.
 
+-- ── §2c step 0 — FORCE THE pgvector LIBRARY TO LOAD ────────────────────────
+--
+-- Without this, the CREATE OR REPLACE below fails on a production-shaped
+-- database with:
+--
+--     ERROR:  permission denied to set parameter "hnsw.ef_search"
+--
+-- and that is exactly how the live 2026-07-31 apply died, mid-file, at the
+-- `set hnsw.ef_search` clause.
+--
+-- MECHANISM. `hnsw.ef_search` is defined by pgvector's C library, in its
+-- _PG_init(). Until that library is loaded into the BACKEND PROCESS, Postgres
+-- has never heard of the name and treats it as a PLACEHOLDER custom GUC. The
+-- asymmetry that makes this so easy to miss:
+--
+--   * a plain session `SET hnsw.ef_search = '120'` on a placeholder SUCCEEDS
+--     for any role — placeholders are created PGC_USERSET;
+--   * `CREATE FUNCTION ... SET hnsw.ef_search = '120'` on a placeholder FAILS
+--     for a non-superuser, because storing a value in proconfig means asserting
+--     the caller may set that parameter LATER, and Postgres cannot know a
+--     placeholder's eventual permission context — the library could define it
+--     superuser-only. So it refuses unless you are superuser.
+--
+-- Once the library IS loaded the GUC is real and USERSET, and any role may put
+-- it in proconfig. Loading it is therefore the whole fix, and it needs no
+-- privilege: evaluating any vector expression pulls in the library, because the
+-- type's I/O functions live there.
+--
+-- WHY NOTHING CAUGHT THIS EARLIER — worth recording, because the same blind
+-- spot will hide the next one:
+--
+--     PG 16 + superuser      -> succeeds   (masked)
+--     PG 16 + NON-superuser  -> FAILS
+--     PG 17 + superuser      -> succeeds   (masked)
+--     PG 17 + NON-superuser  -> FAILS      <- production
+--
+-- The discriminator is the ROLE, not the server version. Every disposable
+-- replay — mine, CI's, the auditor's — connects as the container's `postgres`
+-- superuser, so all four of us exercised only the masked row. Supabase's
+-- `postgres` role is NOT a superuser (`usesuper = f`), which is why the first
+-- non-superuser execution of this file was the production one.
+--
+-- Migration 033 survives the same clause purely by accident of ordering: it
+-- creates an HNSW index before its own CREATE FUNCTION, and building that index
+-- loads the library. 034 replaces the function without touching a vector first,
+-- so it inherited none of that protection. Nothing about that difference is
+-- visible when reading either file.
+--
+-- Schema-agnostic by construction: pgvector lives in `extensions` on Supabase
+-- and in `public` on a stock pgvector image, so the schema is resolved from
+-- pg_extension rather than assumed. Idempotent — it reads catalogs and
+-- evaluates one literal.
+do $$
+declare
+  v_schema text;
+begin
+  select n.nspname
+    into v_schema
+    from pg_extension e
+    join pg_namespace n on n.oid = e.extnamespace
+   where e.extname = 'vector';
+
+  if v_schema is null then
+    raise exception
+      '[034] pgvector is not installed, so hnsw.ef_search cannot be set and memory_hybrid_search cannot be created. Migration 001 installs it; apply 001 first.';
+  end if;
+
+  -- The load itself. Any vector expression does it; a one-element literal is
+  -- the cheapest. Result discarded — we want only the side effect.
+  execute format('select ''[1]''::%I.vector', v_schema);
+
+  if not exists (select 1 from pg_settings where name = 'hnsw.ef_search') then
+    raise exception
+      '[034] pgvector loaded from schema %, but hnsw.ef_search is still undefined — the SET clause below would fail for a non-superuser. Refusing to continue with a half-applied migration.',
+      v_schema;
+  end if;
+end
+$$;
+
 create or replace function public.memory_hybrid_search (
   query_text          text,
   query_embedding     vector(1536),

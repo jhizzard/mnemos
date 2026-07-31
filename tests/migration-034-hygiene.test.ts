@@ -259,6 +259,33 @@ test('§2c keys the solved-problem arm on category, and drops the dead arms', ()
   assert.ok(!/when 'convention'/.test(effective), "the dead source_type 'convention' arm must be gone");
 });
 
+test('§2c forces the pgvector library to load BEFORE the hnsw.ef_search SET clause', () => {
+  // This is the fence for the 2026-07-31 live apply failure:
+  //   ERROR: permission denied to set parameter "hnsw.ef_search"
+  // `hnsw.ef_search` is a PLACEHOLDER GUC until pgvector's library is loaded
+  // into the backend, and a non-superuser may not pin a placeholder into a
+  // function's proconfig (Postgres cannot know its eventual permission
+  // context). Supabase's `postgres` is not a superuser, so the first
+  // non-superuser execution of this file was the production one. Evaluating any
+  // vector expression loads the library and turns the placeholder into a real
+  // USERSET GUC.
+  //
+  // Verified both directions on a production-shaped database (PG17,
+  // non-superuser, pgvector in `extensions`): with the guard removed the apply
+  // fails at exactly the live error and line; with it, the apply is clean.
+  const loadIdx = effective.indexOf("::%i.vector");
+  const setIdx = effective.indexOf("set hnsw.ef_search");
+  assert.ok(loadIdx > -1, 'the library-load guard is missing — a non-superuser apply will fail');
+  assert.ok(setIdx > -1, 'expected the hnsw.ef_search SET clause');
+  assert.ok(
+    loadIdx < setIdx,
+    'the library-load guard must come BEFORE the SET clause, or it defends nothing'
+  );
+  // Schema-agnostic: pgvector is in `extensions` on Supabase and `public` on a
+  // stock image, so the schema must be resolved from the catalog, never assumed.
+  assert.match(squashed, /from pg_extension e join pg_namespace n on n\.oid = e\.extnamespace where e\.extname = 'vector'/);
+});
+
 test('§2c replaces memory_hybrid_search at the SAME signature and restates BOTH SET clauses', () => {
   // CREATE OR REPLACE replaces proconfig wholesale. Omitting these would null
   // the GATE 4 pin AND 033's hnsw tuning in one statement.
