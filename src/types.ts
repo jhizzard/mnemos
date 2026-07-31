@@ -258,6 +258,45 @@ export interface ProposeResult {
 }
 
 /**
+ * Sprint 84 T2: input to memorySessionRecord / the webhook `session_record`
+ * op — end-of-conversation capture for web surfaces (migration 035).
+ *
+ * `source_agent` is loose `string` at the core and strict at the boundary,
+ * matching ProposeInput: a non-whitelisted value is REJECTED, not stored.
+ * There is deliberately NO `session_id` field — the RPC MINTS it as
+ * `web:<source_agent>:<conversation_key>` so a web caller can never address,
+ * and therefore never overwrite, a CLI/hook-written session row.
+ */
+export interface SessionRecordInput {
+  source_agent: string;
+  /** The web surface's own conversation id. <= 200 chars, [A-Za-z0-9._:@-]. */
+  conversation_key: string;
+  /** The conversation summary. Trimmed; <= 8000 chars. */
+  summary: string;
+  project?: string | null;
+  /**
+   * Turn count. Recorded as given and never inflated — the Rumen picker's
+   * floor filter reads it, so a short conversation simply is not swept.
+   */
+  messages_count?: number | null;
+  started_at?: string | Date | null;
+  /** Defaults to now() in the RPC — the picker requires a non-NULL ended_at. */
+  ended_at?: string | Date | null;
+  topics?: unknown[];
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Sprint 84 T2: result of a successful session record — the memory_sessions
+ * row id plus the server-minted session_id, so the caller can report the key
+ * it was filed under without a second round-trip.
+ */
+export interface SessionRecordResult {
+  id: string;
+  session_id: string;
+}
+
+/**
  * Sprint 78 T3 (recall telemetry): which retrieval surface produced a
  * recall-hit log row. Stored on `memory_recall_log.surface` (migration 027).
  * MCP-stdio paths log their native surface; the webhook server stamps

@@ -6,7 +6,8 @@
  * here instead of spawning an MCP child process per ingest.
  *
  *   POST /mnestra           { op: 'remember'|'recall'|'search'|'status'
- *                                 |'index'|'timeline'|'get'|'propose', ...args }
+ *                                 |'index'|'timeline'|'get'|'propose'
+ *                                 |'session_record'|'feedback', ...args }
  *   GET  /healthz          liveness + store stats
  *   GET  /observation/:id  single memory by UUID (citation endpoint)
  *
@@ -31,6 +32,7 @@ import { memoryRecall, type RecallOutput } from './recall.js';
 import { recordRecallFeedback } from './recall_log.js';
 import { memoryRemember } from './remember.js';
 import { memoryPropose, isProposeRejected } from './propose.js';
+import { memorySessionRecord, isSessionRecordRejected } from './session_record.js';
 import { memorySearch } from './search.js';
 import { memoryStatus } from './status.js';
 import {
@@ -48,6 +50,8 @@ import type {
   MemoryItem,
   ProposeInput,
   ProposeResult,
+  SessionRecordInput,
+  SessionRecordResult,
   RecallHit,
   RecallInput,
   RememberInput,
@@ -70,6 +74,13 @@ export interface OpDeps {
   /** Sprint 76 T1: quarantined web-proposal channel (memory_inbox only). */
   propose: (input: ProposeInput) => Promise<ProposeResult>;
   /**
+   * Sprint 84 T2: end-of-conversation capture for web surfaces
+   * (memory_sessions only — the Rumen tick's input queue, which no recall
+   * path reads). Optional so pre-84 test deps objects still typecheck; the
+   * handler 501s when it is absent rather than pretending to have written.
+   */
+  session_record?: (input: SessionRecordInput) => Promise<SessionRecordResult>;
+  /**
    * Sprint 78 T3: recall-telemetry feedback receiver (fire-and-forget). The
    * `op:'feedback'` handler calls this; the default impl marks the memory's
    * most-recent recall-log row cited/dismissed. Void return — never awaited,
@@ -89,6 +100,7 @@ export const defaultDeps: OpDeps = {
   timeline: memoryTimeline,
   get: memoryGet,
   propose: memoryPropose,
+  session_record: memorySessionRecord,
   feedback: (memoryId, event) => recordRecallFeedback(memoryId, event),
 };
 
@@ -249,6 +261,62 @@ export async function dispatchOp(
           return { status: 200, body: { ok: true, id: result.id, status: 'pending' } };
         } catch (err) {
           if (isProposeRejected(err)) {
+            return { status: 400, body: { ok: false, error: (err as Error).message } };
+          }
+          throw err;
+        }
+      }
+      case 'session_record': {
+        // Sprint 84 T2 — bridge-only end-of-conversation capture for web
+        // surfaces. Strict field names (no aliasing like `remember`): the
+        // bridge is the sole caller and builds to this contract. Validation
+        // rejections (TS mirror or the SQL RPC, both prefixed
+        // MEMORY_SESSION_RECORD_REJECTED) are client errors → 400 with the
+        // reason for the bridge to surface to the connector; anything else
+        // stays a 500 via the outer catch.
+        //
+        // NOTE ON session_id: there is no `session_id` argument, by design.
+        // The RPC mints it as web:<source_agent>:<conversation_key>, which is
+        // what makes the upsert unable to reach a CLI/hook-written row. A
+        // caller-supplied session_id would hand that guard away.
+        if (typeof deps.session_record !== 'function') {
+          // An older deps object (pre-84). Say so rather than 200-ing a write
+          // that did not happen.
+          return {
+            status: 501,
+            body: { ok: false, error: 'session_record op not available on this Mnestra build' },
+          };
+        }
+        const sourceAgent = args.source_agent as string | undefined;
+        if (!sourceAgent) {
+          return { status: 400, body: { ok: false, error: 'session_record requires source_agent' } };
+        }
+        const conversationKey = args.conversation_key as string | undefined;
+        if (!conversationKey) {
+          return { status: 400, body: { ok: false, error: 'session_record requires conversation_key' } };
+        }
+        const summary = args.summary as string | undefined;
+        if (!summary) {
+          return { status: 400, body: { ok: false, error: 'session_record requires summary' } };
+        }
+        try {
+          const result = await deps.session_record({
+            source_agent: sourceAgent,
+            conversation_key: conversationKey,
+            summary,
+            project: (args.project ?? null) as string | null,
+            messages_count: (args.messages_count ?? null) as number | null,
+            started_at: (args.started_at ?? null) as string | null,
+            ended_at: (args.ended_at ?? null) as string | null,
+            topics: args.topics as unknown[] | undefined,
+            metadata: args.metadata as Record<string, unknown> | undefined,
+          });
+          return {
+            status: 200,
+            body: { ok: true, id: result.id, session_id: result.session_id },
+          };
+        } catch (err) {
+          if (isSessionRecordRejected(err)) {
             return { status: 400, body: { ok: false, error: (err as Error).message } };
           }
           throw err;
