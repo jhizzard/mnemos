@@ -7,6 +7,34 @@
  */
 
 export { memoryRemember } from './remember.js';
+export { memoryCite, CITATION_RPC, type CiteInput, type CiteResult, type CiteDeps } from './cite.js';
+export {
+  extractGraphForMemory,
+  scheduleWriteExtraction,
+  drainWriteExtractions,
+  extractionEnabled,
+  __resetExtractState,
+  type ExtractInput,
+  type ExtractDeps,
+  type ExtractReport,
+  type ExtractedEntity,
+  type ExtractedTriple,
+} from './extract_write.js';
+export {
+  problemSignature,
+  problemLookupKey,
+  shouldSignProblem,
+  normalizeSymptom,
+  symptomHash,
+  classifyProblem,
+  freeClass,
+  pickSymptomLine,
+  PROBLEM_CLASSES,
+  PROBLEM_SIGNATURE_VERSION,
+  PROBLEM_EXTRACTED_BY,
+  type ProblemSignature,
+  type ProblemLookupKey,
+} from './problem_signature.js';
 export { memoryRecall, type RecallOutput, type RecallDeps } from './recall.js';
 export {
   memoryPropose,

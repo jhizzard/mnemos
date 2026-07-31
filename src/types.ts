@@ -137,6 +137,17 @@ export interface RememberInput {
    * Ignored when `force` is set (force never reaches the merge branch).
    */
   refresh?: boolean;
+  /**
+   * Sprint 83 T2: the verbatim failing line, when the caller has it (the
+   * flashback path embeds the matched error line; a hook can pass captured
+   * stderr). Used ONLY to build `metadata.problem_signature` on a
+   * solved-problem-class write — never stored as content, never embedded.
+   *
+   * Omit and the signature is derived from the content itself. Supplying it
+   * is strictly better: a memory is a write-up ABOUT a failure, whereas this
+   * is the failure, and the failure is what a later occurrence will match on.
+   */
+  symptom_text?: string | null;
 }
 
 export type RememberResult = 'inserted' | 'updated' | 'skipped';
@@ -369,6 +380,17 @@ export interface RecallHit {
    * needs its own evaluation.
    */
   score_calibrated?: number;
+  /**
+   * Sprint 83 T2 (label producer): the id of the reinjection event this hit
+   * was returned in — the same uuid on all K sibling hits and on their
+   * `memory_recall_log` rows (migration 031).
+   *
+   * Additive and optional: present on hits that came back through a surface
+   * that mints one (memoryRecall), absent on raw `memory_hybrid_search` rows
+   * and on anything that predates this. Pair it with the hit's 1-based rank to
+   * cite exactly one log row via `memory_cite`.
+   */
+  recall_group_id?: string;
 }
 
 export interface SearchInput {

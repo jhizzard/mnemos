@@ -3,11 +3,11 @@
 /**
  * Mnestra CLI entry point
  *
- * Default (no args): starts the stdio MCP server with thirteen tools:
+ * Default (no args): starts the stdio MCP server with fourteen tools:
  *   memory_remember, memory_recall, memory_recall_graph, memory_search,
  *   memory_forget, memory_status, memory_summarize_session, memory_index,
  *   memory_timeline, memory_get, memory_link, memory_unlink,
- *   memory_related.
+ *   memory_related, memory_cite.
  *
  * `mnestra serve`: starts the HTTP webhook server (src/webhook-server.ts)
  * instead of the MCP stdio server. The two are additive — existing MCP
@@ -45,6 +45,7 @@ import {
   memoryLink,
   memoryUnlink,
   memoryRelated,
+  memoryCite,
   SOURCE_AGENTS,
   type SourceAgent,
 } from '../src/index.js';
@@ -814,6 +815,67 @@ server.registerTool(
       return { content: [{ type: 'text' as const, text: JSON.stringify(rows, null, 2) }] };
     } catch (err) {
       console.error('[mnestra-mcp] memory_related failed:', err);
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }],
+      };
+    }
+  }
+);
+
+
+// ── memory_cite ──────────────────────────────────────────────────────────
+
+server.registerTool(
+  'memory_cite',
+  {
+    title: 'Cite Memories (record that a recall was useful)',
+    description:
+      'Record that specific recalled memories ACTUALLY INFORMED your work. Call this right after a memory_recall whose results you used — pass the recall_group_id printed with those results and the [n] handles of the hits you used. This is the only signal that tells the system which memories are worth keeping and surfacing; without it every memory looks equally (un)used. Cite only what you genuinely used: citing everything is worse than citing nothing, because it makes useful and useless memories indistinguishable.',
+    inputSchema: {
+      recall_group_id: z
+        .string()
+        .uuid()
+        .describe('The recall_group_id printed with the recall you are citing'),
+      ranks: z
+        .array(z.number().int().positive())
+        .optional()
+        .describe('The [n] handles of the hits that actually informed your work, e.g. [1, 3]'),
+      memory_ids: z
+        .array(z.string().uuid())
+        .optional()
+        .describe('Explicit memory UUIDs, if you have them instead of the [n] handles'),
+      all: z
+        .boolean()
+        .optional()
+        .describe('Cite every hit in the recall. Use only when you genuinely used all of them — prefer ranks.'),
+      source_agent: z
+        .string()
+        .optional()
+        .describe('Who is citing (claude, codex, …). Optional; fills provenance where it is unknown.'),
+    },
+  },
+  async ({ recall_group_id, ranks, memory_ids, all, source_agent }) => {
+    try {
+      const result = await memoryCite({
+        recall_group_id,
+        ranks: ranks ?? null,
+        memory_ids: memory_ids ?? null,
+        all: all === true,
+        source_agent: source_agent ?? null,
+      });
+      if (!result.ok) {
+        return { content: [{ type: 'text' as const, text: `Not recorded: ${result.error}` }] };
+      }
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Recorded ${result.cited} citation(s) for recall ${recall_group_id}.`,
+          },
+        ],
+      };
+    } catch (err) {
+      console.error('[mnestra-mcp] memory_cite failed:', err);
       return {
         content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }],
       };

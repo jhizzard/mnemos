@@ -12,6 +12,8 @@
  *   - get returns the full MemoryItem (same shape as GET /observation/:id).
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
 import { logRecallHits, markRecallCited } from './recall_log.js';
@@ -44,6 +46,16 @@ export interface IndexHit {
    * `undefined` against a database where 033 has not been applied.
    */
   semantic_similarity?: number | null;
+  /**
+   * Sprint 83 T2 (label producer): the reinjection-event id shared by this
+   * call's hits and their `memory_recall_log` rows (migration 031). Pair it
+   * with the hit's 1-based position to cite one exact row via `memory_cite`.
+   *
+   * `null` when this call logged nothing — an empty result, or the internal
+   * anchor probe that passes `log_surface: null`. Nothing was logged, so there
+   * is no group to cite.
+   */
+  recall_group_id?: string | null;
 }
 
 export interface IndexInput {
@@ -79,14 +91,17 @@ function snippet(content: string): string {
   return flat.slice(0, SNIPPET_MAX - 1).trimEnd() + '…';
 }
 
-function toIndexHit(row: {
-  id: string;
-  content: string;
-  source_type: string;
-  project: string;
-  created_at: string;
-  semantic_similarity?: number | null;
-}): IndexHit {
+function toIndexHit(
+  row: {
+    id: string;
+    content: string;
+    source_type: string;
+    project: string;
+    created_at: string;
+    semantic_similarity?: number | null;
+  },
+  recallGroupId: string | null
+): IndexHit {
   return {
     id: row.id,
     snippet: snippet(row.content),
@@ -96,6 +111,7 @@ function toIndexHit(row: {
     // Sprint 82 T1 (033). `?? null` so a pre-033 database yields an explicit
     // null rather than an absent key — callers branch on one shape, not two.
     semantic_similarity: row.semantic_similarity ?? null,
+    recall_group_id: recallGroupId,
   };
 }
 
@@ -132,7 +148,14 @@ export async function memoryIndex(
   // Sprint 78 T3 — fire-and-forget index-surface telemetry (returned set).
   // log_surface:null suppresses it (memoryTimeline's anchor probe) so the
   // anchor isn't double-counted as a phantom 'index' hit.
+  //
+  // Sprint 83 T2: mint the group id only when we are actually logging. A
+  // suppressed probe writes no rows, so handing back an id would advertise a
+  // citable group that does not exist — memory_cite would report 0 rows and
+  // the caller could not tell "you cited nothing" from "the id was a fiction".
+  let recallGroupId: string | null = null;
   if (input.log_surface !== null) {
+    recallGroupId = randomUUID();
     logRecallHits(
       rows.map((m, i) => ({
         memory_id: m.id,
@@ -140,10 +163,10 @@ export async function memoryIndex(
         rank: i + 1,
         source_type: m.source_type,
       })),
-      { surface: input.log_surface ?? 'index', query }
+      { surface: input.log_surface ?? 'index', query, recallGroupId }
     );
   }
-  return rows.map(toIndexHit);
+  return rows.map((r) => toIndexHit(r, recallGroupId));
 }
 
 /**
@@ -223,16 +246,17 @@ export async function memoryTimeline(
   // Sprint 78 T3 — fire-and-forget timeline-surface telemetry. The query is
   // the anchor query (or the around_id when query-less). No per-row score on
   // the window query, so rank only.
+  const recallGroupId = randomUUID();
   logRecallHits(
     windowRows.map((m, i) => ({
       memory_id: m.id,
       rank: i + 1,
       source_type: m.source_type,
     })),
-    { surface: 'timeline', query: input.query ?? input.around_id ?? '' }
+    { surface: 'timeline', query: input.query ?? input.around_id ?? '', recallGroupId }
   );
 
-  return windowRows.map(toIndexHit);
+  return windowRows.map((r) => toIndexHit(r, recallGroupId));
 }
 
 /** memory_get — batch fetch full rows by UUID. Batch-only to discourage N+1. */

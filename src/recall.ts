@@ -10,6 +10,8 @@
  *   happens AFTER the minimum-result guarantee.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { getSupabase } from './db.js';
@@ -98,6 +100,16 @@ export interface RecallOutput {
   hits: RecallHit[];
   tokens_used: number;
   text: string;
+  /**
+   * Sprint 83 T2 (label producer): the id of THIS reinjection event — the same
+   * uuid stamped on all K of this call's `memory_recall_log` rows (migration
+   * 031). Hand it back to `memory_cite` to turn "I used hit 3" into a positive
+   * label on exactly the right row.
+   *
+   * `null` only on the empty-result early returns (nothing was logged, so
+   * there is no group to cite).
+   */
+  recall_group_id: string | null;
 }
 
 export async function memoryRecall(
@@ -106,7 +118,7 @@ export async function memoryRecall(
 ): Promise<RecallOutput> {
   const query = input.query.trim();
   if (!query) {
-    return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
+    return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
   }
 
   const budget = input.token_budget ?? DEFAULT_TOKEN_BUDGET;
@@ -152,12 +164,12 @@ export async function memoryRecall(
 
   if (error) {
     console.error('[mnestra-search] memory_hybrid_search failed:', error.message);
-    return { hits: [], tokens_used: 0, text: `Search error: ${error.message}` };
+    return { hits: [], tokens_used: 0, text: `Search error: ${error.message}`, recall_group_id: null };
   }
 
   let rows = (data ?? []) as RecallHit[];
   if (rows.length === 0) {
-    return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
+    return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
   }
 
   // Sprint 50 T2 — source_agent filter. memory_hybrid_search doesn't return
@@ -176,7 +188,7 @@ export async function memoryRecall(
         '[mnestra-search] source_agent lookup failed:',
         agentErr.message
       );
-      return { hits: [], tokens_used: 0, text: `Search error: ${agentErr.message}` };
+      return { hits: [], tokens_used: 0, text: `Search error: ${agentErr.message}`, recall_group_id: null };
     }
     const agentMap = new Map<string, string | null>(
       ((agentRows ?? []) as { id: string; source_agent: string | null }[]).map(
@@ -194,7 +206,7 @@ export async function memoryRecall(
       return sourceAgents.includes(agent);
     });
     if (rows.length === 0) {
-      return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
+      return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
     }
   }
 
@@ -215,7 +227,7 @@ export async function memoryRecall(
     return tags.some((t) => includePrivacy.includes(t)); // any-overlap opt-in
   });
   if (rows.length === 0) {
-    return { hits: [], tokens_used: 0, text: 'No relevant memories found.' };
+    return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
   }
 
   // Pipeline: dedup -> rank. Do NOT drop anything on a score threshold here.
@@ -236,7 +248,18 @@ export async function memoryRecall(
     const projectTag = project ? '' : ` [${m.project}]`;
     const imp = (m.metadata as { importance?: string })?.importance;
     const impTag = imp ? `/${imp}` : '';
-    const line = `- (${m.source_type}${impTag})${projectTag} ${content}`;
+    // Sprint 83 T2: the `[n]` prefix is the CITATION HANDLE. It is the same
+    // 1-based value written to memory_recall_log.rank below, so an agent
+    // saying "I used [3]" resolves to exactly one log row. Four characters a
+    // line, versus 36 for a bare uuid — on a surface whose entire design
+    // constraint is a token budget, ordinals are the only affordable handle.
+    // `kept.length + 1`, not `i + 1`: the two are equal today (the loop breaks
+    // rather than skipping), but the handle MUST track the position in `kept`
+    // — that is what logRecallHits stamps as `rank`. Deriving it from the
+    // candidate index would silently desync the moment anyone turns that
+    // `break` into a `continue`, and the failure would be invisible: every
+    // citation would land on the wrong memory.
+    const line = `[${kept.length + 1}] (${m.source_type}${impTag})${projectTag} ${content}`;
     const lineTokens = estimateTokens(line);
 
     const underMinimum = kept.length < minResults;
@@ -251,9 +274,34 @@ export async function memoryRecall(
     }
   }
 
+  // Sprint 83 T2 — mint the reinjection-event id HERE, not inside the
+  // fire-and-forget logger, so it can be both stamped on the log rows AND
+  // handed to the agent. Those two must be the same value or a citation has
+  // nothing to key on.
+  const recallGroupId = randomUUID();
+
   const header = `${kept.length} memories (${tokensUsed} tokens${
     project ? `, project: ${project}` : ', all projects'
   }):`;
+
+  // The cite prompt. This is the label producer's entire user-facing surface:
+  // without it the agent has no reason to know memory_cite exists, and the
+  // telemetry keeps accumulating rows nobody ever labels. Deliberately last —
+  // it is the instruction the model reads immediately before it acts — and
+  // deliberately conditioned on "actually used", because citing everything
+  // returned would manufacture false positives at exactly the point where a
+  // calibration fit is most damaged by them.
+  //
+  // Suppressed on an empty result for the same reason memoryIndex suppresses
+  // its id when logging is off: logRecallHits writes nothing for zero hits, so
+  // advertising a group id here would offer a citable group that does not
+  // exist, and memory_cite could not distinguish "you cited nothing" from "that
+  // id was fiction". Reachable with min_results: 0 and a first hit over budget.
+  const citeHint =
+    kept.length === 0
+      ? ''
+      : `\n\nUsed any of these? Call memory_cite(recall_group_id="${recallGroupId}", ` +
+        `ranks=[…]) with the [n] of the ones that actually informed your work — not all of them.`;
 
   // Sprint 78 T3 — fire-and-forget recall telemetry. Log the RETURNED SET
   // ONLY (`kept`, after dedup/rank/token-budget — NOT the 10–40 over-fetched
@@ -276,12 +324,24 @@ export async function memoryRecall(
       // Sprint 81: the per-call token budget — same on every hit row of this
       // recall's recall_group_id (see recall_log.ts).
       tokenBudget: budget,
+      // Sprint 83 T2: the id the agent was just handed, so memory_cite's
+      // group lookup finds these exact rows.
+      recallGroupId,
     }
   );
 
   return {
-    hits: withCalibratedScore(kept, input.log_surface ?? 'recall'),
+    // `recall_group_id` also rides on every hit for programmatic callers (the
+    // webhook, TermDeck's bridge) that consume `hits` and never parse `text`.
+    hits: withCalibratedScore(kept, input.log_surface ?? 'recall').map((h) => ({
+      ...h,
+      recall_group_id: recallGroupId,
+    })),
     tokens_used: tokensUsed,
-    text: `${header}\n\n${lines.join('\n')}`,
+    // The hint is NOT counted in tokens_used: that field means "tokens of
+    // recalled memory content" and every existing caller reads it that way.
+    // The header has always sat outside it for the same reason.
+    text: `${header}\n\n${lines.join('\n')}${citeHint}`,
+    recall_group_id: recallGroupId,
   };
 }

@@ -1,0 +1,108 @@
+{
+  "_comment": [
+    "GOLDEN VECTORS for problem_signature (Sprint 83 T2, interface I3).",
+    "Pinned raw -> normalized -> symptom_hash -> class triples. BOTH repos run these:",
+    "mnestra (engram/tests/problem-signature.test.ts) and TermDecks server suite, which",
+    "vendors src/problem_signature_core.cjs. If the two ever disagree, a symptom written",
+    "by one side stops matching a lookup from the other and the solved-problem recall",
+    "path silently returns nothing forever - so a divergence must fail a test, loudly.",
+    "Editing the normalizer INVALIDATES these hashes and every stored signature: bump",
+    "PROBLEM_SIGNATURE_VERSION and regenerate deliberately, never to make a test pass.",
+    "All secrets below are synthetic."
+  ],
+  "signature_version": 1,
+  "extracted_by": "write-time/regex@1",
+  "classes": [
+    "err-git-push-rejected",
+    "err-pg-permission-denied",
+    "err-npm-publish-auth",
+    "err-port-in-use",
+    "err-gitleaks-blocked"
+  ],
+  "vectors": [
+    {
+      "name": "pg-permission-denied via ANSI-colorized stderr",
+      "raw": "\u001b[31merror: permission denied for table memory_items (code: 42501)\u001b[0m",
+      "normalized": "error: permission denied for table memory_items (code: <n>)",
+      "symptom_hash": "9a9696cad614c557c31d68c6e14c4253",
+      "class": "err-pg-permission-denied"
+    },
+    {
+      "name": "pg-permission-denied plain — MUST hash identically to the colorized copy",
+      "raw": "ERROR:  permission denied for table memory_items (code: 42501)",
+      "normalized": "error: permission denied for table memory_items (code: <n>)",
+      "symptom_hash": "9a9696cad614c557c31d68c6e14c4253",
+      "class": "err-pg-permission-denied"
+    },
+    {
+      "name": "git push rejected (non-fast-forward)",
+      "raw": "! [rejected]        main -> main (non-fast-forward)",
+      "normalized": "! [rejected] main -> main (non-fast-forward)",
+      "symptom_hash": "95826a78ec5a3403f2c78ccb447c7af3",
+      "class": "err-git-push-rejected"
+    },
+    {
+      "name": "npm publish auth (E403) — multiline, first classifying line wins",
+      "raw": "npm ERR! code E403\nnpm ERR! 403 403 Forbidden - PUT https://registry.npmjs.org/@jhizzard%2fmnestra",
+      "normalized": "npm err! code e403",
+      "symptom_hash": "52de2ac4f9fec7a9af3cefcf5ff78a21",
+      "class": "err-npm-publish-auth"
+    },
+    {
+      "name": "port in use — port number collapses to <n>",
+      "raw": "Error: listen EADDRINUSE: address already in use :::3000",
+      "normalized": "error: listen eaddrinuse: address already in use :::<n>",
+      "symptom_hash": "23693e5a0f2b3c9590cc0a79176e33d9",
+      "class": "err-port-in-use"
+    },
+    {
+      "name": "gitleaks blocked",
+      "raw": "gitleaks: 2 leaks found: commit blocked by gitleaks",
+      "normalized": "gitleaks: <n> leaks found: commit blocked by gitleaks",
+      "symptom_hash": "ac0918473f9710887899b29769976aa8",
+      "class": "err-gitleaks-blocked"
+    },
+    {
+      "name": "unclassified failure falls back to free:<slug>",
+      "raw": "TypeError: Cannot read properties of undefined (reading \"embedding\")",
+      "normalized": "typeerror: cannot read properties of undefined (reading \"embedding\")",
+      "symptom_hash": "35d1a2e0b9853a3707bfab62cfe1d77b",
+      "class": "free:typeerror-cannot-read-properties-undefined-readi"
+    },
+    {
+      "name": "path/pid noise A — MUST hash identically to B",
+      "raw": "FATAL: worker failed at /Users/alice/Documents/proj/src/index.js:412 (pid 88213)",
+      "normalized": "fatal: worker failed at <path>:<n> (pid <n>)",
+      "symptom_hash": "d282900ed5d94c9efa1a74c35599d437",
+      "class": "free:fatal-worker-failed-pid"
+    },
+    {
+      "name": "path/pid noise B — different user, path, line, pid; same failure",
+      "raw": "FATAL: worker failed at /Users/bob/code/other/src/index.js:7 (pid 4)",
+      "normalized": "fatal: worker failed at <path>:<n> (pid <n>)",
+      "symptom_hash": "d282900ed5d94c9efa1a74c35599d437",
+      "class": "free:fatal-worker-failed-pid"
+    },
+    {
+      "name": "JWT in the error text is redacted, never stored",
+      "raw": "auth failed: token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+      "normalized": "auth failed: token [redacted]",
+      "symptom_hash": "1b368a8612fe430557c0a42edcae6ffe",
+      "class": "free:auth-failed-token"
+    },
+    {
+      "name": "bearer token + KEY=VALUE secret are both redacted",
+      "raw": "request rejected; Authorization: Bearer abc123def456ghi789 api_key=supersecretvalue",
+      "normalized": "request rejected; [redacted] api_key=[redacted]",
+      "symptom_hash": "c61842306ee5ca8ca500a3bdd3b8e4b5",
+      "class": "free:request-rejected-api-key"
+    },
+    {
+      "name": "20-lowercase-letter project-ref shape is redacted (synthetic, not a real ref)",
+      "raw": "connect failed for project abcdefghijklmnopqrst pooler",
+      "normalized": "connect failed for project [redacted] pooler",
+      "symptom_hash": "970dc9116f8223790357d4c7962c3bda",
+      "class": "free:connect-failed-project-pooler"
+    }
+  ]
+}

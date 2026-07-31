@@ -26,7 +26,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
 import { classifyGranularity } from './granularity.js';
+import { scheduleWriteExtraction } from './extract_write.js';
 import { stripPrivate } from './privacy.js';
+import { problemSignature } from './problem_signature.js';
 import { memoryLink } from './relationships.js';
 import type { RememberInput, RememberResult, SourceType } from './types.js';
 import { SOURCE_AGENTS } from './types.js';
@@ -175,6 +177,32 @@ export async function memoryRemember(
   const inputMetadata = input.metadata || {};
   const sourceAgent = normalizeSourceAgent(input.source_agent);
 
+  // Sprint 83 T2 — problem_signature (interface I3). Computed on the REDACTED
+  // content, before anything is embedded or written, so a solved-problem write
+  // is stamped in the same statement that stores it: no second round-trip, no
+  // window in which a row exists unsigned.
+  //
+  // Inline rather than fail-open-post-write because it is pure regex + string
+  // work — no network, no LLM, no way to time out. (The expensive
+  // entity/triple extraction is the part that fails open; see extract_write.ts.)
+  // `problemSignature` is total and returns null for non-solved-problem writes,
+  // so no try/catch is needed to keep this off the failure path.
+  const signature = problemSignature({
+    content,
+    source_type: sourceType,
+    category,
+    symptom_text:
+      input.symptom_text ??
+      // Fallback for callers that carry the failing line in metadata rather
+      // than the dedicated field (the flashback path, capture hooks). Read
+      // only — never written back under these names.
+      (typeof inputMetadata.error_text === 'string'
+        ? inputMetadata.error_text
+        : typeof inputMetadata.error_line === 'string'
+          ? inputMetadata.error_line
+          : null),
+  });
+
   const supabase = deps.client ?? getSupabase();
   const embed = deps.generateEmbedding ?? generateEmbedding;
   const embedding = await embed(content);
@@ -253,6 +281,16 @@ export async function memoryRemember(
     };
     if (hadPrivate) mergedMetadata.had_private_content = true;
 
+    // Sprint 83 T2 — keep-canonical, mirroring how content itself is handled
+    // in this branch. The near-duplicate that lost is a RESTATEMENT; letting
+    // its signature overwrite the canonical row's would re-classify a memory
+    // on the strength of the more verbose retelling, which is exactly the
+    // inversion Sprint 79 fixed for content. `refresh: true` means the caller
+    // is deliberately replacing the content, so the signature follows it.
+    if (signature && (refresh || !existingMetadata.problem_signature)) {
+      mergedMetadata.problem_signature = signature;
+    }
+
     mergedMetadata.reinforcements = pushCapped(
       existingMetadata.reinforcements,
       { ts: nowIso, source_agent: sourceAgent, sprint_ref: input.sprint_ref ?? null },
@@ -303,8 +341,28 @@ export async function memoryRemember(
     }
 
     await applyPostWriteLinks(supabase, match.id, input);
+    // A reinforcement is new evidence about an existing memory: re-extract so
+    // entities named only in the restatement still get linked, and so a
+    // re-asserted edge that was previously invalidated comes back live.
+    scheduleWriteExtraction(
+      {
+        memory_id: match.id,
+        content,
+        project,
+        problem_signature:
+          (mergedMetadata.problem_signature as typeof signature | undefined) ?? signature,
+      },
+      { client: supabase }
+    );
     return 'updated';
   }
+
+  // Sprint 83 T2: build the insert metadata additively rather than reusing
+  // `inputMetadata` by reference — the caller's object must not be mutated,
+  // and the signature has to survive alongside whatever it already carried.
+  const insertMetadata: Record<string, unknown> = { ...inputMetadata };
+  if (hadPrivate) insertMetadata.had_private_content = true;
+  if (signature) insertMetadata.problem_signature = signature;
 
   const insertPayload: Record<string, unknown> = {
     content,
@@ -312,7 +370,7 @@ export async function memoryRemember(
     source_type: sourceType,
     category,
     project,
-    metadata: hadPrivate ? { ...inputMetadata, had_private_content: true } : inputMetadata,
+    metadata: insertMetadata,
     source_agent: sourceAgent,
   };
   if (input.sprint_ref) insertPayload.sprint_ref = input.sprint_ref;
@@ -331,6 +389,13 @@ export async function memoryRemember(
   const newId = (inserted as { id?: string } | null)?.id;
   if (newId) {
     await applyPostWriteLinks(supabase, newId, input);
+    // Sprint 83 T2 — write-time graph extraction. Fire-and-forget, AFTER the
+    // row is durable: the memory is already saved, so the worst case is a
+    // missing edge, never a lost write. Off unless MNESTRA_EXTRACT_ENABLED=1.
+    scheduleWriteExtraction(
+      { memory_id: newId, content, project, problem_signature: signature },
+      { client: supabase }
+    );
   }
 
   return 'inserted';

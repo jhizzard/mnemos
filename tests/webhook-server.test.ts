@@ -23,7 +23,7 @@ function mockDeps(overrides: Partial<OpDeps> = {}): OpDeps {
   return {
     remember: async () => 'inserted',
     recall: async () =>
-      ({ hits: [], tokens_used: 0, text: 'No relevant memories found.' }) satisfies RecallOutput,
+      ({ hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null }) satisfies RecallOutput,
     search: async () => [],
     status: async () => emptyStatus,
     index: async () => [],
@@ -53,7 +53,8 @@ test('dispatchOp recall returns JSON shape matching MCP stdio output', async () 
       return {
         hits: [fakeHit],
         tokens_used: 42,
-        text: '1 memory (42 tokens, project: termdeck):\n\n- (fact/important) TermDeck server listens on :3000',
+        text: '1 memory (42 tokens, project: termdeck):\n\n[1] (fact/important) TermDeck server listens on :3000',
+        recall_group_id: 'b0f0d6b2-6a9f-4a2f-8f4a-2c1d9f0e3a11',
       };
     },
   });

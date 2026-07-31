@@ -41,7 +41,7 @@ function mockDeps(overrides: Partial<OpDeps> = {}): OpDeps {
   return {
     remember: async () => 'inserted',
     recall: async () =>
-      ({ hits: [], tokens_used: 0, text: 'No relevant memories found.' }) satisfies RecallOutput,
+      ({ hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null }) satisfies RecallOutput,
     search: async () => [],
     status: async () => emptyStatus,
     index: async () => [],
@@ -112,7 +112,7 @@ test('POST /mnestra without the secret header → 401, dispatchOp never reached'
   const deps = mockDeps({
     recall: async () => {
       recalled = true;
-      return { hits: [], tokens_used: 0, text: '' };
+      return { hits: [], tokens_used: 0, text: '', recall_group_id: null };
     },
   });
   const server = startWebhookServer({ port: 0, secret: TEST_SECRET, deps });

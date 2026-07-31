@@ -160,7 +160,17 @@ export async function dispatchOp(
         });
         return {
           status: 200,
-          body: { ok: true, hits: out.hits, tokens_used: out.tokens_used, text: out.text },
+          body: {
+            ok: true,
+            hits: out.hits,
+            tokens_used: out.tokens_used,
+            text: out.text,
+            // Sprint 83 T2 — over-the-wire callers get the reinjection-event
+            // id too, so a web-surface consumer can cite through
+            // `op:'feedback'` (or the group-keyed citation op) rather than
+            // being limited to the memory_get path.
+            recall_group_id: out.recall_group_id,
+          },
         };
       }
       case 'search': {

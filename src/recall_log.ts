@@ -60,6 +60,20 @@ export interface RecallLogContext {
    * cold-vs-warm "token-in" delta.
    */
   tokenBudget?: number | null;
+  /**
+   * Sprint 83 T2 (label producer): the caller's OWN group id for this recall.
+   *
+   * Migration 031 made a recall a discrete "reinjection event"; the id was
+   * minted HERE, inside a fire-and-forget writer that returns void — so it
+   * never escaped to the caller, and therefore never reached the agent, and
+   * therefore nothing could ever cite a specific reinjection. That is the
+   * structural reason the label channel has a producer on no dominant path.
+   *
+   * Callers that need to SURFACE the id (memoryRecall, memoryIndex,
+   * memoryTimeline) now mint it themselves and pass it down. Omitted → minted
+   * here exactly as before, so every other caller is byte-for-byte unchanged.
+   */
+  recallGroupId?: string | null;
 }
 
 export interface RecallLogDeps {
@@ -231,7 +245,15 @@ export function logRecallHits(
     // rows — the identity of a single "reinjection event". One logRecallHits
     // call == one recall == one group, so generating it here (not per-hit) is
     // exactly the right granularity.
-    const recallGroupId = randomUUID();
+    //
+    // Sprint 83 T2: prefer the caller's id when it supplied one (it needs to
+    // hand the same id to the agent so a later memory_cite can name THIS
+    // event). Validated, not trusted — a malformed value would silently
+    // orphan the group from every row it was supposed to key.
+    const recallGroupId =
+      typeof ctx.recallGroupId === 'string' && UUID_RE.test(ctx.recallGroupId)
+        ? ctx.recallGroupId
+        : randomUUID();
     // Sprint 81 (R2): explicit ctx provenance (the webhook threads it from
     // request args) WINS; otherwise fall back to the trusted-producer env vars
     // TermDeck sets at panel spawn. Resolved once per call (per-call, not

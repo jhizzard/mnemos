@@ -56,7 +56,7 @@ function depsWithRealPropose(client: any): OpDeps {
   return {
     remember: unreachable('remember') as OpDeps['remember'],
     recall: async () =>
-      ({ hits: [], tokens_used: 0, text: '' }) satisfies RecallOutput,
+      ({ hits: [], tokens_used: 0, text: '', recall_group_id: null }) satisfies RecallOutput,
     search: async () => [],
     status: async () => emptyStatus,
     index: async () => [],

@@ -83,10 +83,18 @@ jobs:
         # 032 function rather than a hand-copied reference of it, which is the
         # only version of that test that cannot drift.
         #
-        # Every migration still applies, in order: 001..032, then the baseline
-        # capture, then 033 and anything after it. A future 034 lands in the
-        # second pass automatically — `10#` forces base-10 so `008`/`009` are
-        # not misread as octal.
+        # Every migration still applies, in order: 001..032, baseline capture,
+        # 033, then Sprint 83's pre-034 fixtures, then 034 and anything after.
+        # `10#` forces base-10 so `008`/`009` are not misread as octal.
+        #
+        # Sprint 83 T1 adds the second split. 034's central backward-compat claim
+        # is "every edge that existed before me is still valid after me", and the
+        # only fixture that can test it is one that genuinely pre-dates 034 —
+        # including an edge whose relationship_type 034's hard-coded list has
+        # never heard of, which is what forces 034's adopt-DISTINCT pass to be
+        # real. Seeding after 034 would prove something else entirely. (034a
+        # refuses to run if 034 has already been applied, so this ordering cannot
+        # silently rot into a vacuous test.)
         env:
           PGPASSWORD: postgres
         run: |
@@ -103,7 +111,11 @@ jobs:
           echo "Seeding migration-033 fixtures + capturing pre-033 baseline"
           psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
             -f tests/sql/033a_seed_and_baseline.sql
-          apply_range 33 999
+          apply_range 33 33
+          echo "Seeding migration-034 pre-034 legacy edges (incl. an unknown relationship_type)"
+          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+            -f tests/sql/034a_seed_legacy_edges.sql
+          apply_range 34 999
 
       - name: Verify migration 033 behavior, index usage, and hygiene gates
         # Self-checking: every assertion RAISEs on failure, so a green step is
@@ -114,3 +126,16 @@ jobs:
         run: |
           psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
             -f tests/sql/033b_verify.sql
+
+      - name: Verify migration 034 graph layer, label producer, and hygiene gates
+        # Same self-checking contract as 033b: every assertion RAISEs, so a green
+        # step IS the acceptance evidence. Covers legacy-edge survival across the
+        # vocabulary FK swap, the history-preserving valid_at backfill,
+        # invalidate-don't-delete + resurrection, REQ-1 expansion semantics,
+        # entity convergence, citation idempotency reaching fit-platt's real
+        # query, and the repaired solved-problem decay profile.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+            -f tests/sql/034b_verify.sql
