@@ -1,0 +1,28 @@
+{
+  // Type-check the operator scripts under scripts/ WITHOUT building them.
+  //
+  // scripts/ is deliberately absent from tsconfig.json's `include`: it must not
+  // land in dist/, because the npm `files` whitelist ships dist/ wholesale and
+  // these are local analytics tools, not package surface. But "not built" must
+  // not mean "not checked" — that is how a script quietly rots against the
+  // types it reads. This config gives them a noEmit check instead.
+  //
+  //   npm run typecheck:scripts
+  //
+  // The scripts are executed with Node's type stripping:
+  //   node --experimental-strip-types scripts/calibration/fit-platt.ts
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    // Node's type stripping does not erase enums/namespaces/parameter
+    // properties, so keep the scripts to erasable syntax only and let the
+    // compiler enforce it rather than discovering it at runtime.
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["scripts/**/*.ts", "src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "dist-tests"]
+}

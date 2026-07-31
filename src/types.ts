@@ -326,6 +326,49 @@ export interface RecallHit {
    * degrades to "untagged" rather than throwing.
    */
   privacy_tags?: string[] | null;
+  /**
+   * Sprint 82 T1 (migration 033): the row's RAW cosine similarity to the query
+   * embedding, `1 - (embedding <=> query_embedding)`, in [-1, 1] (in practice
+   * [0, 1] for OpenAI embeddings).
+   *
+   * This is the CARDINAL signal, and it is not interchangeable with `score`.
+   * `score` is an ordinal RRF composite: `1/(60+rank)` summed over two branches
+   * and multiplied by the decay/type/project/recall_boost stack, which caps it
+   * at 2/61 × 1.5 × 1.5 ≈ 0.074. Live telemetry over ~38.8k memory_recall_log
+   * rows confirms the arithmetic exactly (p50 0.0216, max 0.074). So `score`
+   * orders results and nothing more — it is not comparable across queries and
+   * must never be rendered as a similarity percentage (doing so displays "2%"
+   * for an excellent hit, which has already triggered one false store-health
+   * alarm). Use `semantic_similarity` for anything that needs a magnitude:
+   * thresholds, confidence, a percentage in a UI.
+   *
+   * Present on EVERY row 033 returns, including rows that matched only on the
+   * full-text branch (the function recomputes it over the fused set). `null`
+   * only when the caller supplied no query embedding; `undefined` on results
+   * from a database where 033 has not been applied yet — read it defensively
+   * as `hit.semantic_similarity ?? null` so both degrade the same way.
+   */
+  semantic_similarity?: number | null;
+  /**
+   * Sprint 82 T3: calibrated P(this hit is actually useful) ∈ [0, 1], from the
+   * Platt fit in `src/calibration.ts`.
+   *
+   * ADDITIVE and OPTIONAL by design. The field is present only when a fitted
+   * model exists (`CALIBRATION_FITTED`); it is **absent** — not null, not 0 —
+   * on an uncalibrated install, so that a consumer's `'score_calibrated' in
+   * hit` check is a truthful test of "has anyone actually estimated this".
+   *
+   * It is **absent today.** The fit was attempted read-only against the
+   * daily-driver store and refused: 39,150 telemetry rows carry 2 positive
+   * labels (both test artefacts) and 0 dismissals. See
+   * `docs/calibration-report-2026-07-30.md`.
+   *
+   * Never replaces `score` (ordinal) or `semantic_similarity` (cardinal
+   * cosine), and does NOT participate in ranking — Sprint 82 keeps it
+   * display-only, because changing retrieval order on a calibrated probability
+   * needs its own evaluation.
+   */
+  score_calibrated?: number;
 }
 
 export interface SearchInput {

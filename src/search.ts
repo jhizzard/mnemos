@@ -9,6 +9,7 @@
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
 import { logRecallHits } from './recall_log.js';
+import { withCalibratedScore } from './calibration.js';
 import type { RecallDeps } from './recall.js';
 import type { RecallHit, SearchInput } from './types.js';
 
@@ -59,5 +60,5 @@ export async function memorySearch(
     }
   );
 
-  return hits;
+  return withCalibratedScore(hits, input.log_surface ?? 'search');
 }

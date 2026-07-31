@@ -16,6 +16,7 @@ import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
 import { classifyGranularity } from './granularity.js';
 import { logRecallHits } from './recall_log.js';
+import { withCalibratedScore } from './calibration.js';
 import type { RecallHit, RecallInput } from './types.js';
 
 export interface RecallDeps {
@@ -279,7 +280,7 @@ export async function memoryRecall(
   );
 
   return {
-    hits: kept,
+    hits: withCalibratedScore(kept, input.log_surface ?? 'recall'),
     tokens_used: tokensUsed,
     text: `${header}\n\n${lines.join('\n')}`,
   };

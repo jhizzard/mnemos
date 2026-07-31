@@ -77,10 +77,40 @@ jobs:
           );
           SQL
       - name: Apply migrations in order
+        # Sprint 82 T1: split at 033 so the behavioral test can capture what
+        # migration 032 actually does BEFORE 033 replaces it. The equivalence
+        # assertion in tests/sql/033b_verify.sql then compares against the real
+        # 032 function rather than a hand-copied reference of it, which is the
+        # only version of that test that cannot drift.
+        #
+        # Every migration still applies, in order: 001..032, then the baseline
+        # capture, then 033 and anything after it. A future 034 lands in the
+        # second pass automatically — `10#` forces base-10 so `008`/`009` are
+        # not misread as octal.
         env:
           PGPASSWORD: postgres
         run: |
-          for file in migrations/*.sql; do
-            echo "Applying $file"
-            psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 -f "$file"
-          done
+          apply_range() {
+            for file in migrations/*.sql; do
+              n=$((10#$(basename "$file" | cut -d_ -f1)))
+              if [ "$n" -ge "$1" ] && [ "$n" -le "$2" ]; then
+                echo "Applying $file"
+                psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 -f "$file"
+              fi
+            done
+          }
+          apply_range 1 32
+          echo "Seeding migration-033 fixtures + capturing pre-033 baseline"
+          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+            -f tests/sql/033a_seed_and_baseline.sql
+          apply_range 33 999
+
+      - name: Verify migration 033 behavior, index usage, and hygiene gates
+        # Self-checking: every assertion RAISEs on failure, so a green step is
+        # the acceptance evidence. -e echoes each statement so the captured
+        # EXPLAIN plans are readable in the run log.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d mnestra_test -v ON_ERROR_STOP=1 \
+            -f tests/sql/033b_verify.sql

@@ -37,6 +37,13 @@ export interface IndexHit {
   source_type: SourceType;
   project: string;
   created_at: string;
+  /**
+   * Sprint 82 T1 (migration 033): raw cosine similarity to the query embedding.
+   * See RecallHit.semantic_similarity — this is the cardinal signal, unlike the
+   * ordinal RRF `score` (which the index projection deliberately still omits).
+   * `undefined` against a database where 033 has not been applied.
+   */
+  semantic_similarity?: number | null;
 }
 
 export interface IndexInput {
@@ -78,6 +85,7 @@ function toIndexHit(row: {
   source_type: string;
   project: string;
   created_at: string;
+  semantic_similarity?: number | null;
 }): IndexHit {
   return {
     id: row.id,
@@ -85,6 +93,9 @@ function toIndexHit(row: {
     source_type: row.source_type as SourceType,
     project: row.project,
     created_at: row.created_at,
+    // Sprint 82 T1 (033). `?? null` so a pre-033 database yields an explicit
+    // null rather than an absent key — callers branch on one shape, not two.
+    semantic_similarity: row.semantic_similarity ?? null,
   };
 }
 
