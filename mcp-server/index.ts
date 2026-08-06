@@ -3,11 +3,17 @@
 /**
  * Mnestra CLI entry point
  *
- * Default (no args): starts the stdio MCP server with fourteen tools:
+ * Default (no args): starts the stdio MCP server with sixteen tools:
  *   memory_remember, memory_recall, memory_recall_graph, memory_search,
  *   memory_forget, memory_status, memory_summarize_session, memory_index,
  *   memory_timeline, memory_get, memory_link, memory_unlink,
- *   memory_related, memory_cite.
+ *   memory_related, memory_cite, objective_list, objective_ratify.
+ *
+ * Sprint 71 B-T1 — the two objective_* tools are the tier-0 surface
+ * (migrations/038_objective_tier.sql). objective_ratify is operator-gated
+ * behind MNESTRA_ALLOW_OBJECTIVE_RATIFY=1 and carries BOTH mutation verbs
+ * (create/supersede, and retire via `retire_id`) so there is exactly one
+ * tool an agent could use to change tier 0, and it is closed by default.
  *
  * `mnestra serve`: starts the HTTP webhook server (src/webhook-server.ts)
  * instead of the MCP stdio server. The two are additive — existing MCP
@@ -46,6 +52,17 @@ import {
   memoryUnlink,
   memoryRelated,
   memoryCite,
+  objectiveList,
+  objectiveHistory,
+  objectiveRatify,
+  objectiveRetire,
+  formatObjectives,
+  isObjectiveRejected,
+  OBJECTIVE_MAX_ACTIVE,
+  OBJECTIVE_TEXT_MAX_CHARS,
+  OBJECTIVE_RANK_MIN,
+  OBJECTIVE_RANK_MAX,
+  OBJECTIVE_RATIFY_GATE_ENV,
   SOURCE_AGENTS,
   type SourceAgent,
 } from '../src/index.js';
@@ -331,7 +348,7 @@ server.registerTool(
   {
     title: 'Recall',
     description:
-      'Smart retrieval of relevant memories. Returns concise, deduplicated results within a token budget. Prioritizes decisions and bug fixes over raw document chunks. Always returns at least min_results hits when available. Omit project to search across ALL projects. Optionally filter by source_agents to recall only rows produced by specific agents (CLI: claude/codex/gemini/grok/orchestrator; web surfaces: claude-web/chatgpt-web/grok-web/gemini-web — base and -web values are distinct, e.g. "grok" never matches "grok-web"); set include_null_source=true to also include historical rows whose authoring agent is unknown. By default rows carrying any privacy tag are excluded; pass include_privacy with category tags to surface them.',
+      'Smart retrieval of relevant memories. Returns concise, deduplicated results within a token budget. Prioritizes decisions and bug fixes over raw document chunks. Always returns at least min_results hits when available. Omit project to search across ALL projects. Optionally filter by source_agents to recall only rows produced by specific agents (CLI: claude/codex/gemini/grok/orchestrator; web surfaces: claude-web/chatgpt-web/grok-web/gemini-web — base and -web values are distinct, e.g. "grok" never matches "grok-web"); set include_null_source=true to also include historical rows whose authoring agent is unknown. By default rows carrying any privacy tag are excluded; pass include_privacy with category tags to surface them. A `tier0` pinned block, when present, is printed FIRST and is never reordered or downranked — those lines are injected context, not retrieved hits, so they carry no [n] handle and must not be cited.',
     inputSchema: {
       query: z.string().describe('What to search for in memory'),
       project: z
@@ -407,7 +424,7 @@ server.registerTool(
   {
     title: 'Recall (graph-aware)',
     description:
-      'Graph-aware retrieval. Runs vector recall, then expands the top-K results through memory_relationships to depth N, and re-ranks the union by vector_score × edge_weight × recency_score. Returns memories with `depth` (0=vector hit, 1+=graph neighbor) and `final_score`. Use when you want context-by-association in addition to context-by-similarity.',
+      'Graph-aware retrieval. Runs vector recall, then expands the top-K results through the memory graph — typed relationships, entity co-mention, and community co-membership — and re-ranks the union by vector_score × edge_weight × recency_score. Returns memories with `depth` (0=vector hit, 1+=graph neighbor) and `final_score`. Use when you want context-by-association in addition to context-by-similarity. Two presentation rules: (1) a `tier0` pinned block is ALWAYS emitted first, ahead of every retrieved result, and is never reordered, downranked, or folded into a hub — it is injected context, not a search hit, and carries no [n] citation handle; (2) when 3+ members of one consolidation community are hit, they collapse into that community\'s compiled summary as a single `hub` result, with the members listed beneath it as id + one-line-gist citations you can expand via memory_get. Privacy-tagged rows are excluded by default here exactly as in memory_recall.',
     inputSchema: {
       query: z.string().describe('What to search for in memory'),
       project: z
@@ -428,15 +445,25 @@ server.registerTool(
         .max(50)
         .default(10)
         .describe('Top-K seeds for vector recall before graph expansion (default 10)'),
+      hub_min_members: z
+        .number()
+        .int()
+        .min(0)
+        .max(50)
+        .optional()
+        .describe(
+          'Collapse a consolidation community into its compiled summary once this many of its members are hit (default 3). 0 disables collapse and returns the raw walk.'
+        ),
     },
   },
-  async ({ query, project, depth, k }) => {
+  async ({ query, project, depth, k, hub_min_members }) => {
     try {
       const out = await memoryRecallGraph({
         query,
         project: project ?? null,
         depth: depth || 2,
         k: k || 10,
+        hub_min_members,
       });
       return { content: [{ type: 'text' as const, text: out.text }] };
     } catch (err) {
@@ -876,6 +903,175 @@ server.registerTool(
       };
     } catch (err) {
       console.error('[mnestra-mcp] memory_cite failed:', err);
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }],
+      };
+    }
+  }
+);
+
+// ── objective_list ───────────────────────────────────────────────────────
+
+server.registerTool(
+  'objective_list',
+  {
+    title: 'List Tier-0 Objectives',
+    description:
+      "Read a project's tier-0 objectives — the small, ratified set of things the project is for, what must never happen, and where it currently stands. Tier 0 is INJECTED at session start and re-injected at compaction, so you normally already have it; call this to check the current set before proposing a change, to see the ratification history, or when you are working on a project whose objectives were not injected. Objectives are never recalled, ranked, decayed or consolidated — they are not memories.",
+    inputSchema: {
+      project: z.string().describe('Project name, e.g. "termdeck". Tier 0 is per-project.'),
+      include_history: z
+        .boolean()
+        .optional()
+        .describe('Also return superseded/retired objectives (default false: active only)'),
+    },
+  },
+  async ({ project, include_history }) => {
+    try {
+      if (include_history) {
+        const rows = await objectiveHistory(project);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(rows, null, 2) }] };
+      }
+      const rows = await objectiveList(project);
+      return {
+        content: [
+          { type: 'text' as const, text: formatObjectives(rows, project) },
+          { type: 'text' as const, text: JSON.stringify(rows, null, 2) },
+        ],
+      };
+    } catch (err) {
+      console.error('[mnestra-mcp] objective_list failed:', err);
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }],
+      };
+    }
+  }
+);
+
+// ── objective_ratify ─────────────────────────────────────────────────────
+//
+// The ONLY tool that mutates tier 0, and it is closed unless the operator
+// opened it. All three verbs — create, replace, retire — live here because
+// there is exactly one mutation RPC underneath: retirement is objective_ratify
+// with a supersedes and no content. Migration 038's GATE 6 enforces that
+// one-entry-point property as a live privilege fact, so this tool cannot drift
+// into fronting a second path without the migration's receipt failing.
+
+server.registerTool(
+  'objective_ratify',
+  {
+    title: 'Ratify a Tier-0 Objective (operator-gated)',
+    description:
+      `Create, replace, or retire a tier-0 objective. THIS IS AN OPERATOR ACT, not an agent one: it is refused unless ${OBJECTIVE_RATIFY_GATE_ENV}=1 is set in this process, and objectives are what constrain you — do not ratify one because it seemed like a good idea mid-task. Propose it to the operator in chat and let them decide. To REPLACE an objective pass supersedes=<its id> (the old row is marked, never deleted, and the replacement inherits its rank unless you pass a new one). To RETIRE one with no replacement pass retire_id=<its id>. Max ${OBJECTIVE_MAX_ACTIVE} active objectives per project; max ${OBJECTIVE_TEXT_MAX_CHARS} characters each.`,
+    inputSchema: {
+      project: z.string().describe('Project name. Always required — on a retire it is checked against the row, so a mistyped id cannot retire another project\'s objective.'),
+      content: z
+        .string()
+        .optional()
+        .describe(
+          `The objective, as prose the next agent will be handed as binding. Required unless retiring. Max ${OBJECTIVE_TEXT_MAX_CHARS} chars.`
+        ),
+      ratified_by: z
+        .string()
+        .describe('Who ratified this — the operator, not the agent. Always required.'),
+      rank: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          `Pin order, ${OBJECTIVE_RANK_MIN}-${OBJECTIVE_RANK_MAX}, ascending. Required for a NEW objective; optional when superseding (inherits the predecessor's rank).`
+        ),
+      supersedes: z
+        .string()
+        .uuid()
+        .optional()
+        .describe('UUID of the active objective this one replaces.'),
+      retire_id: z
+        .string()
+        .uuid()
+        .optional()
+        .describe('UUID of an objective to retire with no replacement. Mutually exclusive with content/supersedes.'),
+      reason: z.string().optional().describe('Why it is being retired (stored on the row).'),
+      metadata: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('Optional structured metadata.'),
+    },
+  },
+  async ({ project, content, ratified_by, rank, supersedes, retire_id, reason, metadata }) => {
+    try {
+      if (retire_id) {
+        if (content || supersedes) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: retire_id is mutually exclusive with content/supersedes. Retire an objective, or ratify one — not both in a call.',
+              },
+            ],
+          };
+        }
+        if (!project) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: project is required to retire an objective — it is checked against the row server-side, so a mistyped id cannot retire another project\'s objective.',
+              },
+            ],
+          };
+        }
+        // Routed through objective_ratify in retire mode — the single mutation
+        // entry point. There is no separate retire RPC to reach.
+        await objectiveRetire({ project, id: retire_id, ratified_by, reason: reason ?? null });
+        const rows = await objectiveList(project);
+        return {
+          content: [
+            { type: 'text' as const, text: `Retired objective ${retire_id} (ratified by ${ratified_by}). The row is marked, not deleted.` },
+            { type: 'text' as const, text: formatObjectives(rows, project) },
+          ],
+        };
+      }
+
+      if (!project || !content) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Error: project and content are required to ratify an objective (or pass retire_id to retire one).',
+            },
+          ],
+        };
+      }
+
+      const result = await objectiveRatify({
+        project,
+        content,
+        ratified_by,
+        rank: rank ?? null,
+        supersedes: supersedes ?? null,
+        metadata: (metadata as Record<string, unknown> | undefined) ?? null,
+      });
+      const rows = await objectiveList(project);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: result.superseded
+              ? `Ratified ${result.id}, superseding ${result.superseded} (kept as history).`
+              : `Ratified ${result.id} at rank ${result.rank}.`,
+          },
+          { type: 'text' as const, text: formatObjectives(rows, project) },
+        ],
+      };
+    } catch (err) {
+      // A refused ratification is an expected outcome, not a crash — surface the
+      // reason code plainly so the caller can act on it (and so a closed gate
+      // reads as "ask the operator", not as a broken tool).
+      if (isObjectiveRejected(err)) {
+        return { content: [{ type: 'text' as const, text: `Refused — ${(err as Error).message}` }] };
+      }
+      console.error('[mnestra-mcp] objective_ratify failed:', err);
       return {
         content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }],
       };

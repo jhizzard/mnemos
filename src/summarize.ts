@@ -7,6 +7,7 @@
  * post-session ingestion.
  */
 
+import { resolveAnthropicKey } from './anthropic-key.js';
 import { memoryRemember } from './remember.js';
 import type { Category, Importance, RememberResult } from './types.js';
 
@@ -41,9 +42,11 @@ const IMPORTANCE_RANK: Record<Importance, number> = { minor: 1, important: 2, cr
 const IMPORTANCE_FLOOR: Importance = 'minor';
 
 async function extractFacts(text: string): Promise<ExtractedFact[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? '';
+  const apiKey = resolveAnthropicKey();
   if (!apiKey) {
-    console.error('[mnestra] ANTHROPIC_API_KEY missing — summarize_session returning empty');
+    console.error(
+      '[mnestra] no ANTHROPIC_API_KEY in env or ~/.termdeck/secrets.env — summarize_session returning empty'
+    );
     return [];
   }
 

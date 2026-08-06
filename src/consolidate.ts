@@ -12,6 +12,7 @@
  * is_active = false), never deleted. You can audit and revert.
  */
 
+import { resolveAnthropicKey } from './anthropic-key.js';
 import { getSupabase } from './db.js';
 import { generateEmbedding, formatEmbedding } from './embeddings.js';
 import { stripPrivate } from './privacy.js';
@@ -38,9 +39,11 @@ interface MemoryRow {
 }
 
 async function synthesizeCanonical(cluster: MemoryRow[]): Promise<string | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? '';
+  const apiKey = resolveAnthropicKey();
   if (!apiKey) {
-    console.error('[mnestra-consolidate] no ANTHROPIC_API_KEY — skipping synthesis');
+    console.error(
+      '[mnestra-consolidate] no ANTHROPIC_API_KEY in env or ~/.termdeck/secrets.env — skipping synthesis'
+    );
     return null;
   }
 

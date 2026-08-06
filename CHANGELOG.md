@@ -1,3 +1,18 @@
+## [0.13.0] - 2026-08-05
+
+### Added — graph-boosted recall (Sprint 70 Deck A) + objective tier (Sprint 71 Deck B)
+- Migration 037 `memory_recall_graph_boosted`: walk edge set expanded beyond `memory_relationships` to entity co-mention + community co-membership (weight-tunable args); keyword→entity triggering seeds the walk from matched entities' mention sets, unioned with vector seeds; project/tombstone/tier-0 predicates applied BEFORE the seed cap (filter-then-limit); three tier-0 belt sites (seed admission, seeds-clean, traversal) pinned by `tests/migration-037-hygiene.test.ts`. Fixes the d0-only diagnosis (all vector seeds, zero graph neighbors).
+- Hub coarse-to-fine (`src/recall_graph.ts`/`src/recall.ts`): ≥3 members of one consolidation community collapse to the `consolidation_summary` hub as primary unit with member citations. Graph-walk as default recall path behind `MNESTRA_GRAPH_RECALL` (default OFF; byte-parity of the OFF path fenced by test).
+- Privacy hydration for the graph surface: the walk's rows are batch-hydrated with `privacy_tags`/`source_agent` so graph recall honors the same default-deny filters as plain recall (the 010-era surface had been privacy-blind since Sprint 38).
+- Structural staleness (`src/staleness.ts`): newest-dated-anchor downranks older same-cluster siblings; consolidation near-dup clusters propose `supersedes` links (proposals only, never auto-applied; tier-0 exempt).
+- Migration 038 objective tier: `public.memory_objectives` with ratification-ONLY mutation — `objective_ratify` is the single grant-reachable entry point (retire = supersede-with-nothing mode; GATE 6 enforces the single-door property as a live `pg_proc` privilege scan with negative control); per-project `pg_advisory_xact_lock` serializes the active-cap check (race proven by container counterfactual); `objective_list` read tool; `tier0FetcherForRecall()` adapter wired into recall's reserved `tier0` envelope block behind `MNESTRA_TIER0_INJECT` (default OFF).
+- `resolveAnthropicKey()` (`src/anthropic-key.ts`): env first (quotes stripped before placeholder detection), `~/.termdeck/secrets.env` fallback — Haiku extraction survives key-free panel envs; commented-out secrets lines never resolve.
+
+### Notes
+- Migrations 037/038 authored + dry-run green in rollback; live-apply is an operator gate (script in the termdeck repo's sprint dir). Both ship dark.
+- Known cleanup (non-blocking, filed): stale "pair"/"two mutation paths" comment wording in `src/objectives.ts:16,28,84,356`.
+- Suite: 631 tests / 629 pass / 2 skip at close (B-T4 verified).
+
 ## [0.12.0] - 2026-07-31
 
 ### Added — web-surface session capture + inbox hygiene (Sprint 84 T2/T3)

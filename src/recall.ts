@@ -19,13 +19,63 @@ import { generateEmbedding, formatEmbedding } from './embeddings.js';
 import { classifyGranularity } from './granularity.js';
 import { logRecallHits } from './recall_log.js';
 import { withCalibratedScore } from './calibration.js';
+import {
+  memoryRecallGraph,
+  renderTier0,
+  resolveTier0,
+  type GraphRecallUnit,
+} from './recall_graph.js';
 import type { RecallHit, RecallInput } from './types.js';
+
+/**
+ * §Seam 1 (Sprint 70, dual-deck) — one pinned tier-0 item.
+ *
+ * Objectives are INJECTED, not retrieved: a tier-0 item is not a search hit
+ * that happened to score well, it is context the caller must see regardless of
+ * what the query was. Deck A reserves the shape and emits `[]`; Deck B (B-T1)
+ * supplies `RecallDeps.fetchTier0` and the block fills with no change here.
+ */
+export interface Tier0Item {
+  memory_id: string;
+  content: string;
+  project?: string | null;
+  source_type?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
 
 export interface RecallDeps {
   /** Override the Supabase client (tests inject a fake). */
   client?: SupabaseClient;
   /** Override the embedding generator (tests bypass the OpenAI call). */
   generateEmbedding?: (text: string) => Promise<number[]>;
+  /**
+   * §Seam 1 wiring point. Absent (Deck A, this sprint) → `tier0: []` and not a
+   * single extra round-trip. Present (B-T1) → the pinned block renders FIRST,
+   * ahead of every retrieved result, on BOTH the default and graph paths.
+   */
+  fetchTier0?: (input: { query: string; project: string | null }) => Promise<Tier0Item[]>;
+  /**
+   * A-T3 wiring point — structural-staleness downrank over the graph path's
+   * primary units. Pure function, applied after hub collapse and never to
+   * tier0. A throw here is logged and ignored: staleness ranks results, it
+   * does not get to fail them.
+   */
+  applyStaleness?: (units: GraphRecallUnit[]) => GraphRecallUnit[];
+}
+
+/**
+ * Sprint 70 A-T2 — `MNESTRA_GRAPH_RECALL`. OFF (the default, and anything that
+ * isn't an explicit truthy value) routes `memory_recall` through
+ * memory_hybrid_search exactly as before — same RPC, same args, same text,
+ * same telemetry. ON routes it through the graph walk + hub collapse.
+ *
+ * Read per CALL, not at module load: a env-var read costs nothing next to an
+ * embedding round-trip, and a load-time constant would make the flag
+ * untestable in-process and un-flippable without a restart.
+ */
+export function graphRecallEnabled(): boolean {
+  const raw = (process.env.MNESTRA_GRAPH_RECALL ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
 }
 
 const DEFAULT_TOKEN_BUDGET = 2000;
@@ -110,6 +160,20 @@ export interface RecallOutput {
    * there is no group to cite).
    */
   recall_group_id: string | null;
+  /**
+   * §Seam 1 — the pinned tier-0 block, ALWAYS present and ALWAYS first in
+   * `text`. `[]` this sprint on both paths. It lives on the DEFAULT recall
+   * envelope (not just the graph one) on purpose: `MNESTRA_GRAPH_RECALL` ships
+   * OFF, so a tier0 that only existed on the graph path would be a seam B-T1
+   * could never reach.
+   */
+  tier0: Tier0Item[];
+  /**
+   * Present only when the graph path ran: the hub-collapsed primary units, so
+   * a programmatic caller can see which results are compiled hubs and expand
+   * their member citations. Undefined on the default path.
+   */
+  graph_units?: GraphRecallUnit[];
 }
 
 export async function memoryRecall(
@@ -118,8 +182,21 @@ export async function memoryRecall(
 ): Promise<RecallOutput> {
   const query = input.query.trim();
   if (!query) {
-    return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
+    return {
+      hits: [],
+      tokens_used: 0,
+      text: 'No relevant memories found.',
+      recall_group_id: null,
+      tier0: [],
+    };
   }
+
+  if (graphRecallEnabled()) return recallViaGraph(input, deps);
+
+  // §Seam 1. With no fetchTier0 wired this is a synchronous `[]` — no client
+  // call, no awaitable work, so the OFF path stays byte-identical below.
+  const tier0 = await resolveTier0({ query, project: input.project ?? null }, deps);
+  const pinned = renderTier0(tier0);
 
   const budget = input.token_budget ?? DEFAULT_TOKEN_BUDGET;
   const minResults = input.min_results ?? DEFAULT_MIN_RESULTS;
@@ -164,12 +241,24 @@ export async function memoryRecall(
 
   if (error) {
     console.error('[mnestra-search] memory_hybrid_search failed:', error.message);
-    return { hits: [], tokens_used: 0, text: `Search error: ${error.message}`, recall_group_id: null };
+    return {
+      hits: [],
+      tokens_used: 0,
+      text: `Search error: ${error.message}`,
+      recall_group_id: null,
+      tier0,
+    };
   }
 
   let rows = (data ?? []) as RecallHit[];
   if (rows.length === 0) {
-    return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
+    return {
+      hits: [],
+      tokens_used: 0,
+      text: `${pinned}No relevant memories found.`,
+      recall_group_id: null,
+      tier0,
+    };
   }
 
   // Sprint 50 T2 — source_agent filter. memory_hybrid_search doesn't return
@@ -188,7 +277,13 @@ export async function memoryRecall(
         '[mnestra-search] source_agent lookup failed:',
         agentErr.message
       );
-      return { hits: [], tokens_used: 0, text: `Search error: ${agentErr.message}`, recall_group_id: null };
+      return {
+        hits: [],
+        tokens_used: 0,
+        text: `Search error: ${agentErr.message}`,
+        recall_group_id: null,
+        tier0,
+      };
     }
     const agentMap = new Map<string, string | null>(
       ((agentRows ?? []) as { id: string; source_agent: string | null }[]).map(
@@ -206,7 +301,13 @@ export async function memoryRecall(
       return sourceAgents.includes(agent);
     });
     if (rows.length === 0) {
-      return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
+      return {
+      hits: [],
+      tokens_used: 0,
+      text: `${pinned}No relevant memories found.`,
+      recall_group_id: null,
+      tier0,
+    };
     }
   }
 
@@ -227,7 +328,13 @@ export async function memoryRecall(
     return tags.some((t) => includePrivacy.includes(t)); // any-overlap opt-in
   });
   if (rows.length === 0) {
-    return { hits: [], tokens_used: 0, text: 'No relevant memories found.', recall_group_id: null };
+    return {
+      hits: [],
+      tokens_used: 0,
+      text: `${pinned}No relevant memories found.`,
+      recall_group_id: null,
+      tier0,
+    };
   }
 
   // Pipeline: dedup -> rank. Do NOT drop anything on a score threshold here.
@@ -341,7 +448,150 @@ export async function memoryRecall(
     // The hint is NOT counted in tokens_used: that field means "tokens of
     // recalled memory content" and every existing caller reads it that way.
     // The header has always sat outside it for the same reason.
-    text: `${header}\n\n${lines.join('\n')}${citeHint}`,
+    text: `${pinned}${header}\n\n${lines.join('\n')}${citeHint}`,
     recall_group_id: recallGroupId,
+    tier0,
+  };
+}
+
+/**
+ * `MNESTRA_GRAPH_RECALL=on` — memory_recall answered by the graph walk.
+ *
+ * The graph engine owns RETRIEVAL and RANKING (walk, gates, hub collapse,
+ * staleness); this function owns PRESENTATION, and it reproduces the default
+ * path's contract exactly: `[n]` citation handles, min_results-before-budget,
+ * one telemetry write per call, one recall_group_id handed to the agent.
+ *
+ * The render loop below is a deliberate near-duplicate of the one above rather
+ * than a shared helper. A hub renders as a block (headline + member citation
+ * lines) and must be budgeted as a block, which the flat loop cannot express —
+ * and the flat loop is the byte-identical OFF path, the one thing this sprint
+ * is not allowed to perturb. Duplication here is cheaper than a regression
+ * there.
+ */
+async function recallViaGraph(input: RecallInput, deps: RecallDeps): Promise<RecallOutput> {
+  const query = input.query.trim();
+  const budget = input.token_budget ?? DEFAULT_TOKEN_BUDGET;
+  const minResults = input.min_results ?? DEFAULT_MIN_RESULTS;
+  const project = input.project ?? null;
+
+  const graph = await memoryRecallGraph(
+    {
+      query,
+      project,
+      // Seed count tracks the same over-fetch heuristic the default path uses,
+      // so a budget change moves both surfaces the same way.
+      k: Math.min(Math.max(Math.floor(budget / 100), 5), 25),
+      source_agents: input.source_agents ?? null,
+      include_null_source: input.include_null_source === true,
+      include_privacy: input.include_privacy ?? null,
+      // One log per recall, written below as the caller's surface — not twice,
+      // once as 'graph' and once as 'recall'.
+      log: false,
+    },
+    deps
+  );
+
+  const pinned = renderTier0(graph.tier0);
+  if (graph.results.length === 0) {
+    return {
+      hits: [],
+      tokens_used: 0,
+      text: `${pinned}${graph.text.startsWith('Search error:') ? graph.text : 'No relevant memories found.'}`,
+      recall_group_id: null,
+      tier0: graph.tier0,
+      graph_units: [],
+    };
+  }
+
+  const lines: string[] = [];
+  const kept: GraphRecallUnit[] = [];
+  let tokensUsed = 0;
+
+  for (const unit of graph.results) {
+    const projectTag = project ? '' : ` [${unit.project}]`;
+    const handle = kept.length + 1;
+    let block: string;
+    if (unit.kind === 'hub') {
+      const cites = (unit.citations ?? [])
+        .map((c) => `      · ${c.memory_id.slice(0, 8)} — ${c.gist}`)
+        .join('\n');
+      block =
+        `[${handle}] (hub: ${unit.matched_count} of ${unit.member_count} members)${projectTag} ` +
+        `${truncate(unit.content, MAX_CONTENT_LENGTH)}\n    ↳ collapsed members (expand by id):\n${cites}`;
+    } else {
+      const depthLabel = unit.depth === 0 ? 'vec' : `d${unit.depth}`;
+      block = `[${handle}] (${unit.source_type ?? 'memory'} ${depthLabel})${projectTag} ${truncate(
+        unit.content,
+        MAX_CONTENT_LENGTH
+      )}`;
+    }
+
+    const blockTokens = estimateTokens(block);
+    const underMinimum = kept.length < minResults;
+    const fitsBudget = tokensUsed + blockTokens <= budget;
+    if (underMinimum || fitsBudget) {
+      lines.push(block);
+      kept.push(unit);
+      tokensUsed += blockTokens;
+    } else {
+      break;
+    }
+  }
+
+  const recallGroupId = randomUUID();
+  const hubCount = kept.filter((u) => u.kind === 'hub').length;
+  const header = `${kept.length} memories (graph-recall, ${tokensUsed} tokens${
+    project ? `, project: ${project}` : ', all projects'
+  }${hubCount > 0 ? `, ${hubCount} hub${hubCount === 1 ? '' : 's'}` : ''}):`;
+  const citeHint =
+    kept.length === 0
+      ? ''
+      : `\n\nUsed any of these? Call memory_cite(recall_group_id="${recallGroupId}", ` +
+        `ranks=[…]) with the [n] of the ones that actually informed your work — not all of them.`;
+
+  logRecallHits(
+    kept.map((u, i) => ({
+      memory_id: u.memory_id,
+      score: u.final_score,
+      rank: i + 1,
+      source_type: u.source_type ?? null,
+    })),
+    {
+      surface: input.log_surface ?? 'recall',
+      query,
+      sourceSessionId: input.log_session_id ?? null,
+      sourceAgent: input.log_source_agent ?? null,
+      tokenBudget: budget,
+      recallGroupId,
+    }
+  );
+
+  // `hits` keeps the RecallHit shape every existing programmatic caller reads.
+  // A hub arrives as its consolidation_summary row; its member citations stay
+  // on `graph_units`, which is the only place they exist un-flattened.
+  const hits: RecallHit[] = kept.map((u) => ({
+    id: u.memory_id,
+    content: u.content,
+    // The store's source_type CHECK carries values the TS union doesn't yet
+    // (034 added 'consolidation_summary'); widening SourceType is a types.ts
+    // change, out of this lane. Cast, don't lie about the value.
+    source_type: (u.source_type ?? 'fact') as RecallHit['source_type'],
+    category: null,
+    project: u.project,
+    score: u.final_score,
+    metadata: (u.metadata ?? {}) as Record<string, unknown>,
+    created_at: u.created_at ?? '',
+    privacy_tags: u.privacy_tags ?? null,
+    recall_group_id: recallGroupId,
+  }));
+
+  return {
+    hits,
+    tokens_used: tokensUsed,
+    text: `${pinned}${header}\n\n${lines.join('\n')}${citeHint}`,
+    recall_group_id: recallGroupId,
+    tier0: graph.tier0,
+    graph_units: kept,
   };
 }

@@ -500,6 +500,7 @@ test('quarantine proof: a pending inbox row is invisible to every src read surfa
     'memory_hybrid_search',
     'match_memories',
     'memory_recall_graph',
+    'memory_recall_graph_boosted',
     'memory_status_aggregation',
     'expand_memory_neighborhood',
   ]);

@@ -47,6 +47,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { resolveAnthropicKey } from './anthropic-key.js';
 import { getSupabase } from './db.js';
 import type { ProblemSignature } from './problem_signature.js';
 
@@ -249,11 +250,13 @@ async function haikuExtract(
   vocab: { predicates: string[]; entity_types: string[] },
   signal: AbortSignal
 ): Promise<{ entities: ExtractedEntity[]; triples: ExtractedTriple[] }> {
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? '';
+  const apiKey = resolveAnthropicKey();
   if (!apiKey) {
     if (!warnedNoKey) {
       warnedNoKey = true;
-      console.error('[mnestra-extract] ANTHROPIC_API_KEY missing — extraction disabled');
+      console.error(
+        '[mnestra-extract] no ANTHROPIC_API_KEY in env or ~/.termdeck/secrets.env — extraction disabled'
+      );
     }
     return { entities: [], triples: [] };
   }
